@@ -1,5 +1,4 @@
 using System.Buffers;
-using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using Microsoft.Win32.SafeHandles;
@@ -182,21 +181,12 @@ public static class SafeFileIntake
 internal sealed class WindowsIntakeOperations : IIntakeOperations
 {
     internal const uint FileTypeDisk = 1;
-    private const uint GenericRead = 0x80000000;
-    private const uint FileShareRead = 0x00000001;
-    private const uint OpenExisting = 3;
-    private const uint FileFlagOverlapped = 0x40000000; // Required for cancellable RandomAccess.ReadAsync.
-    private const uint FileFlagRandomAccess = 0x10000000; // Declares non-sequential positional reads.
-    private const uint FileFlagOpenReparsePoint = 0x00200000; // Inspect, never follow, the final component.
+    private readonly WindowsRelativePathNative _relative = new();
 
     public SafeFileHandle OpenLocalReadOnly(string path)
     {
-        // Null SECURITY_ATTRIBUTES makes the returned handle non-inheritable.
-        var handle = CreateFileW(path, GenericRead, FileShareRead, IntPtr.Zero, OpenExisting,
-            FileFlagOverlapped | FileFlagRandomAccess | FileFlagOpenReparsePoint, IntPtr.Zero);
-        if (handle.IsInvalid)
-            throw new IOException("CreateFileW failed.", new Win32Exception(Marshal.GetLastWin32Error()));
-        return handle;
+        var drivePath = path.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase) ? path[4..] : path;
+        return VerifiedPathWalker.Open(Path.GetFullPath(drivePath), _relative);
     }
 
     public uint GetFileType(SafeFileHandle handle) => GetFileTypeNative(handle);
@@ -206,7 +196,9 @@ internal sealed class WindowsIntakeOperations : IIntakeOperations
     public byte[] RentBuffer(int minimumLength) => ArrayPool<byte>.Shared.Rent(minimumLength);
     public void ReturnBuffer(byte[] buffer) => ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
 
-    public string GetFinalPath(SafeFileHandle handle)
+    public string GetFinalPath(SafeFileHandle handle) => ReadFinalPath(handle);
+
+    internal static string ReadFinalPath(SafeFileHandle handle)
     {
         const uint fileNameNormalized = 0;
         var required = GetFinalPathNameByHandleW(handle, null, 0, fileNameNormalized);
@@ -220,9 +212,6 @@ internal sealed class WindowsIntakeOperations : IIntakeOperations
 
     [DllImport("kernel32.dll", EntryPoint = "GetFileType")]
     private static extern uint GetFileTypeNative(SafeFileHandle handle);
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern SafeFileHandle CreateFileW(string fileName, uint desiredAccess, uint shareMode,
-        IntPtr securityAttributes, uint creationDisposition, uint flagsAndAttributes, IntPtr templateFile);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern uint GetFinalPathNameByHandleW(
         SafeFileHandle file, [Out] char[]? path, uint pathLength, uint flags);
