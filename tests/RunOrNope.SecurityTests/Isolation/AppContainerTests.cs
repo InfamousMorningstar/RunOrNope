@@ -122,4 +122,24 @@ public sealed class AppContainerTests
         }
         finally { Directory.Delete(path, true); }
     }
+
+    [Fact]
+    public void Scavenger_removes_only_old_owned_strictly_named_private_resources()
+    {
+        using var profile = AppContainerProfile.Create();
+        var staleOutput = profile.CreatePrivateOutputDirectory();
+        var stalePackage = profile.CreatePrivatePackageDirectory();
+        var freshOutput = profile.CreatePrivateOutputDirectory();
+        var root = Directory.GetParent(staleOutput)!.FullName;
+        var now = DateTime.UtcNow;
+        Directory.SetLastWriteTimeUtc(staleOutput, now - TimeSpan.FromDays(2));
+        Directory.SetLastWriteTimeUtc(stalePackage, now - TimeSpan.FromDays(2));
+
+        WorkerResourceScavenger.Scavenge(root, now);
+
+        Assert.False(Directory.Exists(staleOutput));
+        Assert.False(Directory.Exists(stalePackage));
+        Assert.True(Directory.Exists(freshOutput));
+        Directory.Delete(freshOutput, true);
+    }
 }

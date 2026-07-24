@@ -19,6 +19,8 @@ internal static class NativeMethods
     internal const int ProcThreadAttributeSecurityCapabilities = 0x00020009;
     internal const int ProcThreadAttributeChildProcessPolicy = 0x0002000E;
     internal const uint ChildProcessRestricted = 0x1;
+    internal const uint WaitObject0 = 0;
+    internal const uint WaitTimeout = 258;
     internal const ulong MitigationDep = (1UL << 0) | (1UL << 2);
     internal const ulong MitigationAslr = (1UL << 8) | (1UL << 16) | (1UL << 20);
     internal const ulong MitigationExtensionPoints = 1UL << 32;
@@ -33,7 +35,12 @@ internal static class NativeMethods
     internal const uint FileShareRead = 0x1;
     internal const uint FileShareWrite = 0x2;
     internal const uint FileShareDelete = 0x4;
+    internal const uint GenericRead = 0x80000000;
+    internal const uint GenericWrite = 0x40000000;
+    internal const uint WriteDac = 0x00040000;
+    internal const uint CreateNew = 1;
     internal const uint OpenExisting = 3;
+    internal const uint FileFlagWriteThrough = 0x80000000;
     internal const uint FileFlagBackupSemantics = 0x02000000;
     internal const uint FileFlagOpenReparsePoint = 0x00200000;
     internal const uint HandleFlagInherit = 0x1;
@@ -138,6 +145,11 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool SetHandleInformation(
         SafeFileHandle handle, uint mask, uint flags);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool QueryFullProcessImageNameW(
+        IntPtr process, uint flags, [Out] char[] imageName, ref uint size);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

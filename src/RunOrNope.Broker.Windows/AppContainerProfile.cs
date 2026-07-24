@@ -42,13 +42,18 @@ public sealed class AppContainerProfile : IDisposable
     }
 
     internal string CreatePrivateOutputDirectory()
-        => CreatePrivateDirectory(FileSystemRights.Modify | FileSystemRights.Synchronize |
-                                  FileSystemRights.DeleteSubdirectoriesAndFiles);
+        => CreatePrivateDirectory("output-", FileSystemRights.Modify | FileSystemRights.Synchronize |
+                                             FileSystemRights.DeleteSubdirectoriesAndFiles);
 
     internal string CreatePrivatePackageDirectory()
-        => CreatePrivateDirectory(FileSystemRights.ReadAndExecute | FileSystemRights.Synchronize);
+    {
+        var path = CreatePrivateDirectory(
+            "package-", FileSystemRights.ReadAndExecute | FileSystemRights.Synchronize);
+        File.WriteAllText(Path.Combine(path, WorkerResourceScavenger.ProfileMarkerName), Name);
+        return path;
+    }
 
-    private string CreatePrivateDirectory(FileSystemRights workerRights)
+    private string CreatePrivateDirectory(string prefix, FileSystemRights workerRights)
     {
         ObjectDisposedException.ThrowIf(Sid == IntPtr.Zero, this);
         var currentUser = WindowsIdentity.GetCurrent().User
@@ -65,7 +70,8 @@ public sealed class AppContainerProfile : IDisposable
             InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
             PropagationFlags.None, AccessControlType.Allow));
 
-        var root = Path.Combine(Path.GetTempPath(), "RunOrNope", Guid.NewGuid().ToString("N"));
+        var root = Path.Combine(
+            Path.GetTempPath(), "RunOrNope", prefix + Guid.NewGuid().ToString("N"));
         var directory = new DirectoryInfo(root);
         directory.Create(security);
         var actual = directory.GetAccessControl();

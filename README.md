@@ -25,7 +25,8 @@ builds a suspended worker with an explicit four-handle allowlist (sample,
 private output directory, request pipe, response pipe), assigns the Job before resuming, and exchanges
 versioned length-prefixed UTF-8/JSON frames whose size is checked before
 allocation. A streaming token pass rejects duplicate members, excessive depth,
-strings, and collections before contract objects are materialized. While the
+strings, collections, per-object member counts, and aggregate token counts
+before contract objects are materialized. While the
 worker is still suspended, the broker verifies its AppContainer token, exact
 package SID, zero capabilities, Job membership and limits, effective
 mitigations, and child-process restriction. Any setup, launch, timeout,
@@ -35,17 +36,26 @@ returns `IsolationUnavailable`; there is no ordinary-process fallback.
 This is still an implementation checkpoint, not a usable scanner because the
 actual analyzers and UI are not wired yet. The isolation transport itself now
 completes with a self-contained authenticated worker bundle. Every package file
-is named and SHA-256 hashed in an ECDSA-signed manifest, staged from held
-read-only source handles into a unique worker-readable/package directory, and
-hashed again before launch. Callers must supply the trusted public key from
+is named and SHA-256 hashed in a canonical P-256 ECDSA-signed manifest. Strict
+Windows filename checks reject device names, invalid/trailing characters,
+case collisions, and non-ASCII normalization ambiguity. Files are staged from
+held read-only source handles into a unique worker-readable package directory,
+flushed, hashed again, sealed read/execute-only, and held against write/delete
+replacement through worker termination. The broker also verifies the suspended
+process image is the exact staged entrypoint. Callers must supply the trusted public key from
 their application trust root; trusting a key stored beside the package would
 defeat the signature.
 
 The live security suite uses local listeners and a dedicated generated probe
 bundle—never a malware sample—to verify denial of IPv4, IPv6, loopback, private
-LAN, HTTP, explicit proxy, WebSocket, DNS, child-process creation, and
+LAN, HTTP, explicit proxy, WebSocket, DNS packet delivery, child-process creation, and
 unexpected inherited handles. It also verifies safe output writes, traversal
-and reparse denial, memory/CPU/wall-clock limits, and Job kill-on-close.
+and reparse denial, memory/CPU/wall-clock limits, and Job kill-on-close. On this
+Windows build, Winsock accepts the isolated raw UDP DNS send locally but the
+controlled listener receives zero bytes; the test measures observed egress
+instead of mislabeling a resolver error as network denial. Worker termination
+is awaited before cleanup, and startup scavenging only removes strictly named,
+ACL-private RunOrNope resources older than 24 hours.
 
 ## Planned supported root formats
 

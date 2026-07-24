@@ -1,6 +1,8 @@
 using System.Collections.Immutable;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using Microsoft.Win32.SafeHandles;
 using RunOrNope.Contracts;
 using RunOrNope.Worker;
@@ -19,6 +21,7 @@ public sealed class WorkerBroker : IWorkerBroker
     private readonly string? _packageSourceRoot;
     private readonly WorkerPackageManifest? _packageManifest;
     private readonly Action<string>? _prepareOutputForTesting;
+    private readonly Action<string>? _attemptPackageReplacementForTesting;
     private readonly WorkerIsolationPolicy _policy;
 
     public WorkerBroker() : this(
@@ -28,7 +31,8 @@ public sealed class WorkerBroker : IWorkerBroker
 
     private WorkerBroker(
         string packageSourceRoot, WorkerPackageManifest? packageManifest,
-        WorkerIsolationPolicy policy, bool trusted, Action<string>? prepareOutputForTesting = null)
+        WorkerIsolationPolicy policy, bool trusted, Action<string>? prepareOutputForTesting = null,
+        Action<string>? attemptPackageReplacementForTesting = null)
     {
         _ = trusted;
         _packageSourceRoot = packageSourceRoot;
@@ -38,13 +42,15 @@ public sealed class WorkerBroker : IWorkerBroker
             : Path.Combine(packageSourceRoot, packageManifest.Document.EntryPoint);
         _policy = policy;
         _prepareOutputForTesting = prepareOutputForTesting;
+        _attemptPackageReplacementForTesting = attemptPackageReplacementForTesting;
     }
 
     internal WorkerBroker(
         string packageSourceRoot, WorkerPackageManifest packageManifest,
-        WorkerIsolationPolicy? policy = null, Action<string>? prepareOutputForTesting = null) : this(
+        WorkerIsolationPolicy? policy = null, Action<string>? prepareOutputForTesting = null,
+        Action<string>? attemptPackageReplacementForTesting = null) : this(
             packageSourceRoot, packageManifest, policy ?? WorkerIsolationPolicy.Default,
-            trusted: true, prepareOutputForTesting) { }
+            trusted: true, prepareOutputForTesting, attemptPackageReplacementForTesting) { }
 
     public static IWorkerBroker CreateAuthenticated(
         string packageSourceRoot, byte[] manifestJson, byte[] signature, byte[] trustedPublicKey)
@@ -69,6 +75,7 @@ public sealed class WorkerBroker : IWorkerBroker
 
         try
         {
+            WorkerResourceScavenger.ScavengeDefault();
             _ = GetSampleSize(sampleHandle);
             return await AnalyzeIsolatedAsync(sampleHandle, request, null, cancellationToken).ConfigureAwait(false);
         }
@@ -127,8 +134,11 @@ public sealed class WorkerBroker : IWorkerBroker
         try
         {
             _prepareOutputForTesting?.Invoke(outputDirectory);
-            var launchExecutable = WorkerPackageStager.Stage(
-                _packageSourceRoot!, packageDirectory, _packageManifest);
+            using var packageLease = WorkerPackageStager.Stage(
+                _packageSourceRoot!, packageDirectory, _packageManifest,
+                new System.Security.Principal.SecurityIdentifier(profile.Sid));
+            var launchExecutable = packageLease.EntryPoint;
+            _attemptPackageReplacementForTesting?.Invoke(packageDirectory);
             using var job = JobObject.Create(_policy);
             using var outputHandle = OpenPrivateOutput(outputDirectory);
             using var requestPipe = new AnonymousPipeServerStream(
@@ -169,7 +179,8 @@ public sealed class WorkerBroker : IWorkerBroker
                     if (!NativeMethods.AssignProcessToJobObject(job.Handle, process.Process))
                         throw new IsolationUnavailableException(
                             $"The worker could not be assigned to its Job Object (error {Marshal.GetLastWin32Error()}).");
-                    VerifySuspendedProcess(process.Process, profile.Sid, job, _policy);
+                    VerifySuspendedProcess(
+                        process.Process, launchExecutable, profile.Sid, job, _policy);
                     if (NativeMethods.ResumeThread(process.Thread) == uint.MaxValue)
                         throw new IsolationUnavailableException(
                             $"The isolated worker could not be resumed (error {Marshal.GetLastWin32Error()}).");
@@ -195,7 +206,7 @@ public sealed class WorkerBroker : IWorkerBroker
                 }
                 finally
                 {
-                    _ = NativeMethods.TerminateProcess(process.Process, 1);
+                    TerminateAndWait(process.Process);
                     NativeMethods.CloseHandle(process.Thread);
                     NativeMethods.CloseHandle(process.Process);
                 }
@@ -206,9 +217,46 @@ public sealed class WorkerBroker : IWorkerBroker
             try { Directory.Delete(outputDirectory, recursive: true); }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             { /* Remains ACL-private; a later broker startup cleanup may retry. */ }
-            try { Directory.Delete(packageDirectory, recursive: true); }
+            try
+            {
+                RestoreBrokerDeleteAccess(packageDirectory);
+                Directory.Delete(packageDirectory, recursive: true);
+            }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             { /* Remains ACL-private and read-only to the disposed worker SID. */ }
+        }
+    }
+
+    private static void RestoreBrokerDeleteAccess(string directory)
+    {
+        var brokerSid = WindowsIdentity.GetCurrent().User ??
+            throw new IsolationUnavailableException("The broker SID is unavailable.");
+        foreach (var path in Directory.EnumerateFiles(directory))
+        {
+            var security = new FileSecurity();
+            security.SetAccessRuleProtection(true, false);
+            security.AddAccessRule(new FileSystemAccessRule(
+                brokerSid, FileSystemRights.FullControl, AccessControlType.Allow));
+            new FileInfo(path).SetAccessControl(security);
+        }
+        var directorySecurity = new DirectorySecurity();
+        directorySecurity.SetAccessRuleProtection(true, false);
+        directorySecurity.AddAccessRule(new FileSystemAccessRule(
+            brokerSid, FileSystemRights.FullControl,
+            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+            PropagationFlags.None, AccessControlType.Allow));
+        new DirectoryInfo(directory).SetAccessControl(directorySecurity);
+    }
+
+    private static void TerminateAndWait(IntPtr process)
+    {
+        _ = NativeMethods.TerminateProcess(process, 1);
+        var wait = NativeMethods.WaitForSingleObject(process, 5_000);
+        if (wait is not NativeMethods.WaitObject0)
+        {
+            // Closing the enclosing kill-on-close Job is the final bounded
+            // lifecycle control. Cleanup will retain locked private resources
+            // for the strict next-start scavenger rather than racing deletion.
         }
     }
 
@@ -242,8 +290,17 @@ public sealed class WorkerBroker : IWorkerBroker
     }
 
     private static void VerifySuspendedProcess(
-        IntPtr process, IntPtr expectedPackageSid, JobObject job, WorkerIsolationPolicy policy)
+        IntPtr process, string expectedImagePath, IntPtr expectedPackageSid,
+        JobObject job, WorkerIsolationPolicy policy)
     {
+        var image = new char[32_768];
+        var imageLength = (uint)image.Length;
+        if (!NativeMethods.QueryFullProcessImageNameW(process, 0, image, ref imageLength) ||
+            !StringComparer.OrdinalIgnoreCase.Equals(
+                Path.GetFullPath(new string(image, 0, checked((int)imageLength))),
+                Path.GetFullPath(expectedImagePath)))
+            throw new IsolationUnavailableException(
+                "The suspended worker image path does not match the authenticated staged entrypoint.");
         if (!NativeMethods.OpenProcessToken(process, NativeMethods.TokenQuery, out var token))
             throw new IsolationUnavailableException("The suspended worker token could not be opened.");
         using (token)

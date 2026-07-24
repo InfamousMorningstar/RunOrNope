@@ -104,8 +104,31 @@ await Probe("websocket", async () =>
     using var socket = new System.Net.WebSockets.ClientWebSocket();
     await socket.ConnectAsync(new Uri($"ws://127.0.0.1:{probe.Ipv4Port}/"), timeout.Token);
 });
-await Probe("dns", async () => _ = await Dns.GetHostAddressesAsync(
-    $"runornope-{Guid.NewGuid():N}.invalid", timeout.Token));
+try
+{
+    using var dns = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+    byte[] query =
+    [
+        0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x09,
+        (byte)'r', (byte)'u', (byte)'n', (byte)'o', (byte)'r', (byte)'n', (byte)'o', (byte)'p', (byte)'e',
+        0x04, (byte)'t', (byte)'e', (byte)'s', (byte)'t', 0x00,
+        0x00, 0x01, 0x00, 0x01
+    ];
+    dns.Connect(new IPEndPoint(IPAddress.Parse(probe.PrivateAddress!), probe.DnsPort));
+    _ = dns.Send(query, SocketFlags.None);
+    // A successful UDP send only means Winsock accepted the datagram locally.
+    // The broker-side listener is the authority on whether any packet escaped.
+    facts.Add("probe:dns=send-accepted");
+}
+catch (SocketException exception) when (exception.SocketErrorCode == SocketError.AccessDenied)
+{
+    facts.Add("probe:dns=denied-access");
+}
+catch (Exception exception)
+{
+    facts.Add($"probe:dns=wrong-failure-{exception.GetType().Name}");
+}
 facts.Add("probe:child=not-tested");
 facts.Add("probe:unexpected-handle=not-tested");
 facts.Add(TryCreateRelative(output, "probe-output.bin")

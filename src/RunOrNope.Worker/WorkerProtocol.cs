@@ -15,6 +15,7 @@ public sealed record WorkerProbeRequest(
     int ProxyPort = 0,
     string? PrivateAddress = null,
     int PrivatePort = 0,
+    int DnsPort = 0,
     long SentinelHandle = 0);
 
 public sealed record WorkerRequestEnvelope(
@@ -24,6 +25,8 @@ public static class WorkerProtocol
 {
     public const int CurrentVersion = 1;
     public const int MaxFrameBytes = 32 * 1024 * 1024;
+    public const int MaxObjectMembers = 64;
+    public const int MaxJsonTokens = 2_000_000;
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -106,7 +109,8 @@ public static class WorkerProtocol
                 probe.Ipv4Port is < 0 or > 65535 ||
                 probe.Ipv6Port is < 0 or > 65535 ||
                 probe.ProxyPort is < 0 or > 65535 ||
-                probe.PrivatePort is < 0 or > 65535)
+                probe.PrivatePort is < 0 or > 65535 ||
+                probe.DnsPort is < 0 or > 65535)
                 throw new WorkerProtocolException("Invalid isolation probe request.");
         }
         return request;
@@ -139,8 +143,11 @@ public static class WorkerProtocol
             var objects = new Stack<HashSet<string>>();
             var arrays = new Stack<(string? Name, int Count)>();
             string? property = null;
+            var tokenCount = 0;
             while (reader.Read())
             {
+                if (++tokenCount > MaxJsonTokens)
+                    throw new WorkerProtocolException("The result exceeds the aggregate JSON token budget.");
                 if (reader.TokenType is JsonTokenType.PropertyName or JsonTokenType.String)
                 {
                     // UTF-8 bytes and JSON escapes are never fewer than the
@@ -162,7 +169,9 @@ public static class WorkerProtocol
                     case JsonTokenType.PropertyName:
                         property = reader.GetString() ??
                                    throw new WorkerProtocolException("A property name is invalid.");
-                        if (objects.Count == 0 || !objects.Peek().Add(property))
+                        if (objects.Count == 0 || objects.Peek().Count >= MaxObjectMembers)
+                            throw new WorkerProtocolException("A result object exceeds its member budget.");
+                        if (!objects.Peek().Add(property))
                             throw new WorkerProtocolException("Duplicate JSON members are forbidden.");
                         break;
                     case JsonTokenType.StartArray:

@@ -105,6 +105,20 @@ public sealed class WorkerEscapeTests
     }
 
     [Fact]
+    public async Task Result_reader_bounds_unique_object_members_before_hashset_growth()
+    {
+        var members = string.Join(',', Enumerable.Range(0, WorkerProtocol.MaxObjectMembers + 1)
+            .Select(index => $"\"p{index}\":0"));
+        await using var stream = new MemoryStream();
+        await WorkerProtocol.WriteFrameAsync(stream, Encoding.UTF8.GetBytes($"{{{members}}}"),
+            TestContext.Current.CancellationToken);
+        stream.Position = 0;
+        await Assert.ThrowsAsync<WorkerProtocolException>(() =>
+            WorkerProtocol.ReadScanResultAsync(
+                stream, TestContext.Current.CancellationToken).AsTask());
+    }
+
+    [Fact]
     public async Task Authenticated_self_contained_worker_completes_benign_ipc()
     {
         var path = Path.Combine(Path.GetTempPath(), $"runornope-benign-{Guid.NewGuid():N}.bin");
@@ -114,7 +128,7 @@ public sealed class WorkerEscapeTests
         {
             using var handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read,
                 FileShare.Read | FileShare.Delete);
-            var (root, manifest) = CreateAuthenticatedPackage(
+            var (root, manifest) = CreateAuthenticatedPackageForTests(
                 "RunOrNope.Worker", "RunOrNope.Worker.exe");
             var broker = new WorkerBroker(root, manifest);
 
@@ -141,6 +155,7 @@ public sealed class WorkerEscapeTests
         var privateAddress = Dns.GetHostAddresses(Dns.GetHostName())
             .First(address => address.AddressFamily == AddressFamily.InterNetwork &&
                               !IPAddress.IsLoopback(address));
+        using var dns = new UdpClient(new IPEndPoint(privateAddress, 0));
         using var privateListener = new TcpListener(privateAddress, 0);
         ipv4.Start(); ipv6.Start(); proxy.Start(); privateListener.Start();
         var path = Path.Combine(Path.GetTempPath(), $"runornope-probe-{Guid.NewGuid():N}.bin");
@@ -148,7 +163,7 @@ public sealed class WorkerEscapeTests
         await File.WriteAllBytesAsync(path, [1], TestContext.Current.CancellationToken);
         try
         {
-            var (root, manifest) = CreateAuthenticatedPackage(
+            var (root, manifest) = CreateAuthenticatedPackageForTests(
                 "RunOrNope.IsolationProbe", "RunOrNope.IsolationProbe.exe");
             var broker = new WorkerBroker(root, manifest, prepareOutputForTesting: output =>
                 Directory.CreateSymbolicLink(Path.Combine(output, "escape-link"), outside.FullName));
@@ -160,13 +175,16 @@ public sealed class WorkerEscapeTests
                 ((IPEndPoint)ipv6.LocalEndpoint).Port,
                 ((IPEndPoint)proxy.LocalEndpoint).Port,
                 privateAddress.ToString(),
-                ((IPEndPoint)privateListener.LocalEndpoint).Port),
+                ((IPEndPoint)privateListener.LocalEndpoint).Port,
+                ((IPEndPoint)dns.Client.LocalEndPoint!).Port),
                 TestContext.Current.CancellationToken);
 
             Assert.True(result.AnalysisStatus == AnalysisStatus.Incomplete,
                 string.Join(Environment.NewLine, result.CountervailingFacts));
-            foreach (var name in new[] { "ipv4", "ipv6", "private", "http", "proxy", "websocket", "dns" })
+            foreach (var name in new[] { "ipv4", "ipv6", "private", "http", "proxy", "websocket" })
                 Assert.Contains($"probe:{name}=denied", result.CountervailingFacts);
+            Assert.True(result.CountervailingFacts.Contains("probe:dns=send-accepted"),
+                string.Join(Environment.NewLine, result.CountervailingFacts));
             Assert.Contains("probe:output-write=allowed", result.CountervailingFacts);
             Assert.Contains("probe:output-traversal=denied", result.CountervailingFacts);
             Assert.Contains("probe:output-reparse=denied", result.CountervailingFacts);
@@ -175,6 +193,7 @@ public sealed class WorkerEscapeTests
             Assert.False(ipv6.Pending());
             Assert.False(proxy.Pending());
             Assert.False(privateListener.Pending());
+            Assert.Equal(0, dns.Available);
         }
         finally
         {
@@ -190,7 +209,7 @@ public sealed class WorkerEscapeTests
         await File.WriteAllBytesAsync(path, [1], TestContext.Current.CancellationToken);
         try
         {
-            var (root, manifest) = CreateAuthenticatedPackage(
+            var (root, manifest) = CreateAuthenticatedPackageForTests(
                 "RunOrNope.IsolationProbe", "RunOrNope.IsolationProbe.exe");
             var broker = new WorkerBroker(root, manifest);
             using var handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read,
@@ -212,7 +231,7 @@ public sealed class WorkerEscapeTests
         await File.WriteAllBytesAsync(sentinelPath, [2], TestContext.Current.CancellationToken);
         try
         {
-            var (root, manifest) = CreateAuthenticatedPackage(
+            var (root, manifest) = CreateAuthenticatedPackageForTests(
                 "RunOrNope.IsolationProbe", "RunOrNope.IsolationProbe.exe");
             var broker = new WorkerBroker(root, manifest);
             using var handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read,
@@ -237,7 +256,7 @@ public sealed class WorkerEscapeTests
     [Fact]
     public async Task Closing_job_object_terminates_a_live_probe()
     {
-        var (root, _) = CreateAuthenticatedPackage(
+        var (root, _) = CreateAuthenticatedPackageForTests(
             "RunOrNope.IsolationProbe", "RunOrNope.IsolationProbe.exe");
         using var process = Process.Start(new ProcessStartInfo(
             Path.Combine(root, "RunOrNope.IsolationProbe.exe"), "--wait")
@@ -272,7 +291,7 @@ public sealed class WorkerEscapeTests
         await File.WriteAllBytesAsync(path, [1], TestContext.Current.CancellationToken);
         try
         {
-            var (root, manifest) = CreateAuthenticatedPackage(
+            var (root, manifest) = CreateAuthenticatedPackageForTests(
                 "RunOrNope.IsolationProbe", "RunOrNope.IsolationProbe.exe");
             var baseline = WorkerIsolationPolicy.Default;
             var policy = baseline with
@@ -293,7 +312,7 @@ public sealed class WorkerEscapeTests
         finally { File.Delete(path); }
     }
 
-    private static (string Root, WorkerPackageManifest Manifest) CreateAuthenticatedPackage(
+    internal static (string Root, WorkerPackageManifest Manifest) CreateAuthenticatedPackageForTests(
         string projectName, string entryPoint)
     {
         var root = new DirectoryInfo(AppContext.BaseDirectory);

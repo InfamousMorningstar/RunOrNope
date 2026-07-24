@@ -26,11 +26,14 @@ internal sealed class WorkerPackageManifest
     internal static WorkerPackageManifest Authenticate(
         ReadOnlySpan<byte> manifestJson, ReadOnlySpan<byte> signature, ReadOnlySpan<byte> trustedPublicKey)
     {
-        if (manifestJson.Length is 0 or > 4 * 1024 * 1024 || signature.Length is 0 or > 1024)
+        if (manifestJson.Length is 0 or > 4 * 1024 * 1024 || signature.Length != 64)
             throw new IsolationUnavailableException("The worker package manifest is outside its size limits.");
         using var verifier = ECDsa.Create();
         verifier.ImportSubjectPublicKeyInfo(trustedPublicKey, out var consumed);
+        var key = verifier.ExportParameters(false);
         if (consumed != trustedPublicKey.Length ||
+            key.Curve.Oid.Value != "1.2.840.10045.3.1.7" ||
+            key.Q.X is not { Length: 32 } || key.Q.Y is not { Length: 32 } ||
             !verifier.VerifyData(manifestJson, signature, HashAlgorithmName.SHA256))
             throw new IsolationUnavailableException("The worker package manifest signature is invalid.");
         WorkerPackageDocument document;
@@ -77,7 +80,16 @@ internal sealed class WorkerPackageManifest
     {
         if (string.IsNullOrWhiteSpace(name) || name.Length > 240 ||
             name != Path.GetFileName(name) || name.Contains(':') ||
-            name is "." or "..")
+            name is "." or ".." || name.EndsWith(' ') || name.EndsWith('.') ||
+            name.Any(character => !(character is >= 'A' and <= 'Z' or
+                >= 'a' and <= 'z' or >= '0' and <= '9' or '.' or '_' or '-')))
             throw new IsolationUnavailableException("A worker package filename is unsafe.");
+        var stem = name.Split('.')[0].ToUpperInvariant();
+        if (stem is "CON" or "PRN" or "AUX" or "NUL" or "CLOCK$" ||
+            (stem.Length == 4 && stem.StartsWith("COM", StringComparison.Ordinal) &&
+             stem[3] is >= '1' and <= '9') ||
+            (stem.Length == 4 && stem.StartsWith("LPT", StringComparison.Ordinal) &&
+             stem[3] is >= '1' and <= '9'))
+            throw new IsolationUnavailableException("A worker package filename is a reserved device name.");
     }
 }
