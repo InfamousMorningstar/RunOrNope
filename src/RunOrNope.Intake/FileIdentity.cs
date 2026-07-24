@@ -10,7 +10,9 @@ internal readonly record struct FileSnapshot(
     long Size,
     long LastWriteTime,
     uint Attributes,
-    uint ReparseTag);
+    uint ReparseTag,
+    bool IsDirectory,
+    bool IsDeletePending);
 
 internal static class WindowsFileIdentity
 {
@@ -30,7 +32,8 @@ internal static class WindowsFileIdentity
             throw new IntakeRejectedException($"Windows could not establish stable file identity (error {Marshal.GetLastWin32Error()}).");
         }
 
-        return new(new(id.VolumeSerialNumber, id.FileId), standard.EndOfFile, basic.LastWriteTime, tag.FileAttributes, tag.ReparseTag);
+        return new(new(id.VolumeSerialNumber, id.FileId), standard.EndOfFile, basic.LastWriteTime,
+            tag.FileAttributes, tag.ReparseTag, standard.Directory, standard.DeletePending);
     }
 
     [StructLayout(LayoutKind.Sequential)]

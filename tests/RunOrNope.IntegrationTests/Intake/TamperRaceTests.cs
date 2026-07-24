@@ -6,6 +6,19 @@ namespace RunOrNope.IntegrationTests.Intake;
 public sealed class TamperRaceTests
 {
     [Fact]
+    public async Task RejectsDirectoryInput()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(path);
+        try
+        {
+            await Assert.ThrowsAsync<IntakeRejectedException>(() => SafeFileIntake.OpenAsync(
+                path, new IntakePolicy(1024), TestContext.Current.CancellationToken));
+        }
+        finally { Directory.Delete(path); }
+    }
+
+    [Fact]
     public async Task RejectsFinalComponentReparsePoint()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));

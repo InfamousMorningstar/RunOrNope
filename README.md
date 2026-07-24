@@ -10,8 +10,10 @@ uploaded** during local analysis.
 This repository currently contains the reproducible .NET 10 solution,
 bounded evidence/verdict contracts, and single-handle file intake. Intake opens
 an input read-only while denying write and delete sharing, records stable
-Windows identity and metadata, hashes through that owned handle, and detects
-PE/CFBF structure by bytes instead of extension. It does not yet provide a
+Windows identity and metadata, accepts local filesystems only, hashes through
+that owned handle, and identifies PE or structurally plausible compound-file
+candidates by bytes instead of extension. A compound-file candidate is not
+claimed to be an MSI until the future MSI analyzer validates it. It does not yet provide a
 usable desktop application, isolated parser worker, full analyzers, or reports.
 
 ## Planned supported root formats
