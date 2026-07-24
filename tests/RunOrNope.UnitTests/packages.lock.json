@@ -8,6 +8,15 @@
         "resolved": "8.8.0",
         "contentHash": "m0kwcqBwvVel03FuMa7Ozo/oTaxYbjeNlcOhQFkyQpwX/8wks6RNl/Jnn58DCZVs6c2oG1RsCZw7HfKSaxLm3w=="
       },
+      "JsonSchema.Net": {
+        "type": "Direct",
+        "requested": "[9.3.0, )",
+        "resolved": "9.3.0",
+        "contentHash": "d780/OM10Vi3ZwXtWsdjSwg4T2Gv6PEs4QO1TOcfwYJsT3IpkV6u6RUJYDxNFifc4jsNeIk+0RgRh1X38R5ySA==",
+        "dependencies": {
+          "JsonPointer.Net": "7.0.1"
+        }
+      },
       "Microsoft.NET.Test.Sdk": {
         "type": "Direct",
         "requested": "[18.0.1, )",
@@ -31,6 +40,25 @@
         "contentHash": "L+4/4y0Uqcg8/d6hfnxhnwh4j9FaeULvefTwrk30rr1o4n/vdPfyUQ8k0yzH8VJx7bmFEkDdcRfbtbjEHlaYcA==",
         "dependencies": {
           "xunit.v3.mtp-v1": "[3.2.2]"
+        }
+      },
+      "Humanizer.Core": {
+        "type": "Transitive",
+        "resolved": "3.0.10",
+        "contentHash": "yZIhtw8sYuvsONzQbZxWpR60tMWYHXoo0DL6nyOqSFiU5POjBTSEyWFpTQtJEZuy+oqiYTXKXY/Mjx7KnqIQFw=="
+      },
+      "Json.More.Net": {
+        "type": "Transitive",
+        "resolved": "3.0.1",
+        "contentHash": "fRctF2J2SILYG6wqP21drmeEODmCVkVQ/b3MndDu2fT1swfySyUgq7ePCk+aENGlDcIm05fyfjh9vcuqDEfv3w=="
+      },
+      "JsonPointer.Net": {
+        "type": "Transitive",
+        "resolved": "7.0.1",
+        "contentHash": "5C497yxfktYFsqxKG+GUQPsMvBqIjzLkqtDEdMGsnBpl3/OB8DOvTo7LEyRX7AVc1kVVj0IX5zhmLrlbvAYEnw==",
+        "dependencies": {
+          "Humanizer.Core": "3.0.10",
+          "Json.More.Net": "3.0.1"
         }
       },
       "Microsoft.ApplicationInsights": {

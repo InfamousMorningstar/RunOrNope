@@ -38,6 +38,36 @@
     },
     "countervailingFacts": { "$ref": "#/$defs/stringArray" }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "analysisStatus": { "const": "complete" } }, "required": [ "analysisStatus" ] },
+      "then": {
+        "properties": {
+          "completeness": { "const": "complete" },
+          "artifacts": {
+            "items": {
+              "allOf": [
+                { "$ref": "#/$defs/artifact" },
+                { "properties": { "completeness": { "const": "complete" } } }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "analysisStatus": { "const": "incomplete" } }, "required": [ "analysisStatus" ] },
+      "then": { "properties": { "completeness": { "not": { "const": "complete" } } } }
+    },
+    {
+      "if": { "properties": { "analysisStatus": { "const": "unsupported-or-invalid-root-format" } }, "required": [ "analysisStatus" ] },
+      "then": { "properties": { "completeness": { "const": "unsupported" } } }
+    },
+    {
+      "if": { "properties": { "analysisStatus": { "const": "isolation-unavailable" } }, "required": [ "analysisStatus" ] },
+      "then": { "properties": { "completeness": { "const": "unavailable" } } }
+    }
+  ],
   "$defs": {
     "safeString": {
       "type": "string",
@@ -97,7 +127,15 @@
       "properties": {
         "title": { "$ref": "#/$defs/safeString" },
         "potentialImpact": { "$ref": "#/$defs/safeString" },
-        "family": { "type": "string" },
+        "family": {
+          "enum": [
+            "network-communication", "data-transfer", "credential-access", "discord-targeting",
+            "wallet-targeting", "process-execution", "persistence", "privilege-elevation",
+            "process-manipulation", "surveillance", "filesystem-discovery", "data-exfiltration",
+            "defense-evasion", "destructive-behavior", "embedded-payloads", "obfuscation",
+            "contextual-anomaly"
+          ]
+        },
         "evidenceStatus": {
           "enum": [
             "confirmed-static-implementation", "strong-structural-evidence", "linked-implementation",

@@ -85,7 +85,16 @@ public static class ScanContractJson
     public static string Serialize(ScanResult result)
     {
         ContractValidator.Validate(result);
-        return JsonSerializer.Serialize(result, Options);
+        try
+        {
+            using var stream = new BoundedMemoryStream(ContractLimits.MaxJsonBytes);
+            JsonSerializer.Serialize(stream, result, Options);
+            return System.Text.Encoding.UTF8.GetString(stream.GetBuffer(), 0, checked((int)stream.Length));
+        }
+        catch (PayloadLimitExceededException)
+        {
+            throw new ContractValidationException("JSON payload exceeds the maximum size.");
+        }
     }
 
     public static ScanResult Deserialize(string json)
@@ -115,13 +124,19 @@ public static class ScanContractJson
     }
 }
 
-internal static class ContractValidator
+public static class ContractValidator
 {
     public static void Validate(ScanResult result)
     {
+        if (result is null) throw new ContractValidationException("A scan result is required.");
         ValidateEnum(result.AnalysisStatus, nameof(result.AnalysisStatus));
         ValidateEnum(result.Completeness, nameof(result.Completeness));
+        ValidateCompleteness(result);
         ValidateString(result.SampleName, nameof(result.SampleName));
+        ValidateArray(result.Artifacts, nameof(result.Artifacts));
+        ValidateArray(result.Observations, nameof(result.Observations));
+        ValidateArray(result.Findings, nameof(result.Findings));
+        ValidateArray(result.CountervailingFacts, nameof(result.CountervailingFacts));
         ValidateCount(result.Artifacts.Length, ContractLimits.MaxArtifacts, nameof(result.Artifacts));
         ValidateCount(result.Observations.Length, ContractLimits.MaxObservations, nameof(result.Observations));
         ValidateCount(result.Findings.Length, ContractLimits.MaxFindings, nameof(result.Findings));
@@ -129,25 +144,32 @@ internal static class ContractValidator
 
         foreach (var artifact in result.Artifacts)
         {
+            if (artifact is null) throw new ContractValidationException("Artifacts cannot contain null.");
             ValidateEnum(artifact.Completeness, "artifact.completeness");
+            if (artifact.Size < 0) throw new ContractValidationException("artifact.size cannot be negative.");
             ValidateString(artifact.Id, "artifact.id");
             ValidateString(artifact.Name, "artifact.name");
-            ValidateString(artifact.Sha256, "artifact.sha256");
+            ValidateSha256(artifact.Sha256);
+            ValidateArray(artifact.ParentIds, "artifact.parentIds");
             ValidateStrings(artifact.ParentIds, "artifact.parentIds");
         }
 
         foreach (var observation in result.Observations)
         {
+            if (observation is null) throw new ContractValidationException("Observations cannot contain null.");
             ValidateEnum(observation.ParserConfidence, "observation.parserConfidence");
             ValidateString(observation.Id, "observation.id");
             ValidateString(observation.Kind, "observation.kind");
             ValidateString(observation.Description, "observation.description");
+            if (observation.Source is null) throw new ContractValidationException("observation.source cannot be null.");
             ValidateString(observation.Source.ArtifactId, "observation.source.artifactId");
+            if (observation.Source.Offset < 0) throw new ContractValidationException("observation.source.offset cannot be negative.");
             if (observation.Source.Region is { } region) ValidateString(region, "observation.source.region");
         }
 
         foreach (var finding in result.Findings)
         {
+            if (finding is null) throw new ContractValidationException("Findings cannot contain null.");
             ValidateEnum(finding.Family, "finding.family");
             ValidateEnum(finding.EvidenceStatus, "finding.evidenceStatus");
             ValidateEnum(finding.ParserConfidence, "finding.parserConfidence");
@@ -166,6 +188,7 @@ internal static class ContractValidator
 
     private static void ValidateStrings(ImmutableArray<string> values, string name)
     {
+        ValidateArray(values, name);
         ValidateCount(values.Length, ContractLimits.MaxNestedStrings, name);
         foreach (var value in values) ValidateString(value, name);
     }
@@ -192,4 +215,67 @@ internal static class ContractValidator
     {
         if (!Enum.IsDefined(value)) throw new ContractValidationException($"{name} is invalid.");
     }
+
+    private static void ValidateArray<T>(ImmutableArray<T> values, string name)
+    {
+        if (values.IsDefault) throw new ContractValidationException($"{name} must be initialized.");
+    }
+
+    private static void ValidateSha256(string value)
+    {
+        ValidateString(value, "artifact.sha256");
+        if (value.Length != 64 || !value.All(character =>
+                character is >= '0' and <= '9'
+                    or >= 'a' and <= 'f'
+                    or >= 'A' and <= 'F'))
+            throw new ContractValidationException("artifact.sha256 must be exactly 64 hexadecimal characters.");
+    }
+
+    private static void ValidateCompleteness(ScanResult result)
+    {
+        var expected = result.AnalysisStatus switch
+        {
+            AnalysisStatus.Complete => ArtifactCompleteness.Complete,
+            AnalysisStatus.UnsupportedOrInvalidRootFormat => ArtifactCompleteness.Unsupported,
+            AnalysisStatus.IsolationUnavailable => ArtifactCompleteness.Unavailable,
+            _ => result.Completeness,
+        };
+        if (result.Completeness != expected)
+            throw new ContractValidationException("Analysis status and overall completeness are inconsistent.");
+        if (result.AnalysisStatus == AnalysisStatus.Incomplete && result.Completeness == ArtifactCompleteness.Complete)
+            throw new ContractValidationException("Incomplete analysis requires an incomplete completeness state.");
+        if (result.AnalysisStatus == AnalysisStatus.Complete
+            && !result.Artifacts.IsDefault
+            && result.Artifacts.Any(artifact => artifact is null || artifact.Completeness != ArtifactCompleteness.Complete))
+            throw new ContractValidationException("Complete analysis cannot contain incomplete artifacts.");
+    }
 }
+
+internal sealed class BoundedMemoryStream(int maximumBytes) : MemoryStream
+{
+    public override void Write(byte[] buffer, int offset, int count)
+    {
+        EnsureCapacity(count);
+        base.Write(buffer, offset, count);
+    }
+
+    public override void Write(ReadOnlySpan<byte> buffer)
+    {
+        EnsureCapacity(buffer.Length);
+        base.Write(buffer);
+    }
+
+    public override void WriteByte(byte value)
+    {
+        EnsureCapacity(1);
+        base.WriteByte(value);
+    }
+
+    private void EnsureCapacity(int additionalBytes)
+    {
+        if (additionalBytes < 0 || Position > maximumBytes - additionalBytes)
+            throw new PayloadLimitExceededException();
+    }
+}
+
+internal sealed class PayloadLimitExceededException : Exception;

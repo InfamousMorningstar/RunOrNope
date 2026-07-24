@@ -5,14 +5,14 @@ namespace RunOrNope.Core.Verdicts;
 
 public sealed record VerdictContribution(
     RiskFamily Family,
-    int RawScore,
-    int AppliedScore,
-    int FamilyCap);
+    long RawScore,
+    long AppliedScore,
+    long FamilyCap);
 
 public sealed record VerdictResult(
     AnalysisStatus AnalysisStatus,
     RiskDisposition? RiskDisposition,
-    int TotalScore,
+    long TotalScore,
     ImmutableArray<VerdictContribution> Contributions,
     ImmutableArray<string> CountervailingFacts,
     string ScoringVersion,
@@ -22,17 +22,17 @@ public static class VerdictEngine
 {
     public static VerdictResult Evaluate(ScanResult scan)
     {
-        ArgumentNullException.ThrowIfNull(scan);
+        ContractValidator.Validate(scan);
         var contributions = scan.Findings
             .GroupBy(finding => finding.Family)
             .OrderBy(group => group.Key)
             .Select(group =>
             {
-                var raw = group.Sum(ScoringPolicy.Score);
+                var raw = group.Aggregate(0L, static (sum, finding) => checked(sum + ScoringPolicy.Score(finding)));
                 return new VerdictContribution(group.Key, raw, Math.Min(raw, ScoringPolicy.FamilyCap), ScoringPolicy.FamilyCap);
             })
             .ToImmutableArray();
-        var total = contributions.Sum(item => item.AppliedScore);
+        var total = contributions.Aggregate(0L, static (sum, item) => checked(sum + item.AppliedScore));
 
         var candidate = DetermineDisposition(scan, total);
         RiskDisposition? disposition = scan.AnalysisStatus switch
@@ -52,19 +52,27 @@ public static class VerdictEngine
             ScoringPolicy.ThresholdVersion);
     }
 
-    private static RiskDisposition DetermineDisposition(ScanResult scan, int total)
+    private static RiskDisposition DetermineDisposition(ScanResult scan, long total)
     {
-        var strongFamilies = scan.Findings
+        var eligible = scan.Findings
             .Where(ScoringPolicy.IsStrongApplicationImplementation)
+            .ToArray();
+        var strongFamilies = eligible
             .Select(finding => finding.Family)
             .Distinct()
             .Count();
-        var hasConfirmedCritical = scan.Findings.Any(finding =>
-            ScoringPolicy.IsStrongApplicationImplementation(finding)
-            && finding.EvidenceStatus == EvidenceStatus.ConfirmedStaticImplementation
+        var hasConfirmedCritical = eligible.Any(finding =>
+            finding.EvidenceStatus == EvidenceStatus.ConfirmedStaticImplementation
             && finding.Severity == Severity.Critical);
+        var eligibleScore = eligible
+            .GroupBy(finding => finding.Family)
+            .Aggregate(0L, static (sum, group) =>
+                checked(sum + Math.Min(
+                    group.Aggregate(0L, static (familySum, finding) =>
+                        checked(familySum + ScoringPolicy.Score(finding))),
+                    ScoringPolicy.FamilyCap)));
 
-        if (total >= ScoringPolicy.HighRiskThreshold && strongFamilies >= 2 && hasConfirmedCritical)
+        if (eligibleScore >= ScoringPolicy.HighRiskThreshold && strongFamilies >= 2 && hasConfirmedCritical)
             return RiskDisposition.HighRisk;
         return total >= ScoringPolicy.CautionThreshold
             ? RiskDisposition.CautionWarranted

@@ -42,8 +42,10 @@ public static class ScoringPolicy
 
     public static bool IsStrongApplicationImplementation(CapabilityFinding finding) =>
         finding.ApplicationLinkage == ApplicationLinkage.Application
+        && finding.Family is not RiskFamily.Obfuscation and not RiskFamily.ContextualAnomaly
+        && finding.ParserConfidence == ParserConfidence.High
         && finding.EvidenceConfidence == EvidenceConfidence.High
         && finding.EvidenceStatus is EvidenceStatus.ConfirmedStaticImplementation
-            or EvidenceStatus.StrongStructuralEvidence
-            or EvidenceStatus.LinkedImplementation;
+            or EvidenceStatus.LinkedImplementation
+        && finding.Reachability is Reachability.Confirmed or Reachability.Linked;
 }
