@@ -33,7 +33,8 @@ public sealed record ArtifactNode(
     string Sha256,
     long Size,
     ArtifactCompleteness Completeness,
-    ImmutableArray<string> ParentIds);
+    ImmutableArray<string> ParentIds,
+    ApplicationLinkage ApplicationLinkage = ApplicationLinkage.Unknown);
 
 public sealed record Observation(
     string Id,
@@ -142,10 +143,14 @@ public static class ContractValidator
         ValidateCount(result.Findings.Length, ContractLimits.MaxFindings, nameof(result.Findings));
         ValidateStrings(result.CountervailingFacts, nameof(result.CountervailingFacts));
 
+        EnsureUnique(result.Artifacts.Select(artifact => artifact?.Id), "artifact IDs");
+        EnsureUnique(result.Observations.Select(observation => observation?.Id), "observation IDs");
+
         foreach (var artifact in result.Artifacts)
         {
             if (artifact is null) throw new ContractValidationException("Artifacts cannot contain null.");
             ValidateEnum(artifact.Completeness, "artifact.completeness");
+            ValidateEnum(artifact.ApplicationLinkage, "artifact.applicationLinkage");
             if (artifact.Size < 0) throw new ContractValidationException("artifact.size cannot be negative.");
             ValidateString(artifact.Id, "artifact.id");
             ValidateString(artifact.Name, "artifact.name");
@@ -180,10 +185,14 @@ public static class ContractValidator
             ValidateEnum(finding.RecommendedAction, "finding.recommendedAction");
             ValidateString(finding.Title, "finding.title");
             ValidateString(finding.PotentialImpact, "finding.potentialImpact");
+            if (finding.ObservationIds.IsDefaultOrEmpty)
+                throw new ContractValidationException("Every capability finding requires observation provenance.");
             ValidateStrings(finding.ObservationIds, "finding.observationIds");
             ValidateStrings(finding.BenignExplanations, "finding.benignExplanations");
             ValidateStrings(finding.Limitations, "finding.limitations");
         }
+
+        ValidateEvidenceReferences(result);
     }
 
     private static void ValidateStrings(ImmutableArray<string> values, string name)
@@ -201,7 +210,8 @@ public static class ContractValidator
     private static void ValidateString(string value, string name)
     {
         if (value is null) throw new ContractValidationException($"{name} cannot be null.");
-        if (value.Length > ContractLimits.MaxStringLength)
+        var scalarCount = CountUnicodeScalars(value, name);
+        if (scalarCount > ContractLimits.MaxStringLength)
             throw new ContractValidationException($"{name} exceeds its maximum length.");
         foreach (var character in value)
         {
@@ -248,6 +258,68 @@ public static class ContractValidator
             && !result.Artifacts.IsDefault
             && result.Artifacts.Any(artifact => artifact is null || artifact.Completeness != ArtifactCompleteness.Complete))
             throw new ContractValidationException("Complete analysis cannot contain incomplete artifacts.");
+    }
+
+    private static int CountUnicodeScalars(string value, string name)
+    {
+        var count = 0;
+        for (var index = 0; index < value.Length; index++, count++)
+        {
+            var character = value[index];
+            if (char.IsHighSurrogate(character))
+            {
+                if (index + 1 >= value.Length || !char.IsLowSurrogate(value[index + 1]))
+                    throw new ContractValidationException($"{name} contains malformed Unicode.");
+                index++;
+            }
+            else if (char.IsLowSurrogate(character))
+            {
+                throw new ContractValidationException($"{name} contains malformed Unicode.");
+            }
+        }
+
+        return count;
+    }
+
+    private static void EnsureUnique(IEnumerable<string?> ids, string name)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var id in ids)
+        {
+            if (id is null || !seen.Add(id))
+                throw new ContractValidationException($"{name} must be non-null and unique.");
+        }
+    }
+
+    private static void ValidateEvidenceReferences(ScanResult result)
+    {
+        var artifacts = result.Artifacts.ToDictionary(artifact => artifact.Id, StringComparer.Ordinal);
+        var observations = result.Observations.ToDictionary(observation => observation.Id, StringComparer.Ordinal);
+
+        foreach (var observation in result.Observations)
+        {
+            if (!artifacts.ContainsKey(observation.Source.ArtifactId))
+                throw new ContractValidationException("Every observation source must resolve to an artifact.");
+        }
+
+        foreach (var finding in result.Findings)
+        {
+            var citedIds = new HashSet<string>(StringComparer.Ordinal);
+            string? citedArtifactId = null;
+            foreach (var observationId in finding.ObservationIds)
+            {
+                if (!citedIds.Add(observationId))
+                    throw new ContractValidationException("Finding observation IDs must be unique.");
+                if (!observations.TryGetValue(observationId, out var observation))
+                    throw new ContractValidationException("Every finding observation ID must resolve exactly once.");
+                var artifact = artifacts[observation.Source.ArtifactId];
+                if (artifact.ApplicationLinkage != finding.ApplicationLinkage)
+                    throw new ContractValidationException("Finding evidence must match its claimed artifact linkage.");
+                citedArtifactId ??= artifact.Id;
+                if (!StringComparer.Ordinal.Equals(citedArtifactId, artifact.Id))
+                    throw new ContractValidationException("A finding's evidence must bind to one source artifact.");
+            }
+        }
     }
 }
 

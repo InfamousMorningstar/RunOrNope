@@ -268,7 +268,11 @@ public sealed class VerdictEngineTests
                 ParserConfidence.High,
                 new SourceLocation("artifact", index, large)))
             .ToImmutableArray();
-        var scan = TestScan.Complete([]) with { Observations = observations };
+        var scan = TestScan.Complete([]) with
+        {
+            Artifacts = [TestScan.Artifact("artifact", ApplicationLinkage.Application)],
+            Observations = observations,
+        };
 
         var act = () => ScanContractJson.Serialize(scan);
 
@@ -351,6 +355,139 @@ public sealed class VerdictEngineTests
     }
 
     [Fact]
+    public void Score_contributing_finding_requires_observation_provenance()
+    {
+        var finding = TestScan.Finding(RiskFamily.CredentialAccess) with { ObservationIds = [] };
+        var scan = TestScan.CompleteWithoutProvenance([finding]);
+
+        FluentActions.Invoking(() => VerdictEngine.Evaluate(scan))
+            .Should().Throw<ContractValidationException>();
+    }
+
+    [Fact]
+    public void Finding_rejects_missing_and_duplicate_observation_ids()
+    {
+        var finding = TestScan.Finding(RiskFamily.CredentialAccess) with { ObservationIds = ["missing"] };
+        var missing = TestScan.CompleteWithoutProvenance([finding]);
+        var duplicate = TestScan.CompleteWithoutProvenance([finding]) with
+        {
+            Artifacts = [TestScan.Artifact("app", ApplicationLinkage.Application)],
+            Observations =
+            [
+                TestScan.Observation("missing", "app"),
+                TestScan.Observation("missing", "app"),
+            ],
+        };
+
+        FluentActions.Invoking(() => VerdictEngine.Evaluate(missing))
+            .Should().Throw<ContractValidationException>();
+        FluentActions.Invoking(() => VerdictEngine.Evaluate(duplicate))
+            .Should().Throw<ContractValidationException>();
+    }
+
+    [Fact]
+    public void Observation_rejects_missing_and_duplicate_artifact_ids()
+    {
+        var finding = TestScan.Finding(RiskFamily.CredentialAccess) with { ObservationIds = ["o"] };
+        var missing = TestScan.CompleteWithoutProvenance([finding]) with
+        {
+            Observations = [TestScan.Observation("o", "missing")],
+        };
+        var duplicate = missing with
+        {
+            Artifacts =
+            [
+                TestScan.Artifact("missing", ApplicationLinkage.Application),
+                TestScan.Artifact("missing", ApplicationLinkage.Application),
+            ],
+        };
+
+        FluentActions.Invoking(() => VerdictEngine.Evaluate(missing))
+            .Should().Throw<ContractValidationException>();
+        FluentActions.Invoking(() => VerdictEngine.Evaluate(duplicate))
+            .Should().Throw<ContractValidationException>();
+    }
+
+    [Fact]
+    public void Cross_artifact_linkage_cannot_support_application_finding()
+    {
+        var finding = TestScan.Finding(
+            RiskFamily.CredentialAccess,
+            EvidenceStatus.ConfirmedStaticImplementation,
+            EvidenceConfidence.High,
+            Severity.Critical) with { ObservationIds = ["dependency-observation"] };
+        var scan = TestScan.CompleteWithoutProvenance([finding]) with
+        {
+            Artifacts = [TestScan.Artifact("dependency", ApplicationLinkage.Dependency)],
+            Observations = [TestScan.Observation("dependency-observation", "dependency")],
+        };
+
+        FluentActions.Invoking(() => VerdictEngine.Evaluate(scan))
+            .Should().Throw<ContractValidationException>();
+    }
+
+    [Fact]
+    public void Finding_rejects_duplicate_citations_and_mixed_source_artifacts()
+    {
+        var duplicated = TestScan.Finding(RiskFamily.CredentialAccess) with { ObservationIds = ["o", "o"] };
+        var duplicatedScan = TestScan.CompleteWithoutProvenance([duplicated]) with
+        {
+            Artifacts = [TestScan.Artifact("app", ApplicationLinkage.Application)],
+            Observations = [TestScan.Observation("o", "app")],
+        };
+        var mixed = duplicated with { ObservationIds = ["o1", "o2"] };
+        var mixedScan = TestScan.CompleteWithoutProvenance([mixed]) with
+        {
+            Artifacts =
+            [
+                TestScan.Artifact("app-1", ApplicationLinkage.Application),
+                TestScan.Artifact("app-2", ApplicationLinkage.Application),
+            ],
+            Observations =
+            [
+                TestScan.Observation("o1", "app-1"),
+                TestScan.Observation("o2", "app-2"),
+            ],
+        };
+
+        FluentActions.Invoking(() => VerdictEngine.Evaluate(duplicatedScan))
+            .Should().Throw<ContractValidationException>();
+        FluentActions.Invoking(() => VerdictEngine.Evaluate(mixedScan))
+            .Should().Throw<ContractValidationException>();
+    }
+
+    [Fact]
+    public void Weak_cited_observation_cannot_make_finding_high_risk_eligible()
+    {
+        var scan = TestScan.WithStrongApplicationImplementation();
+        var weakObservations = scan with
+        {
+            Observations = scan.Observations
+                .Select(observation => observation with { ParserConfidence = ParserConfidence.Low })
+                .ToImmutableArray(),
+        };
+
+        VerdictEngine.Evaluate(weakObservations).RiskDisposition.Should().NotBe(RiskDisposition.HighRisk);
+    }
+
+    [Fact]
+    public void Observation_without_exact_location_cannot_make_finding_high_risk_eligible()
+    {
+        var scan = TestScan.WithStrongApplicationImplementation();
+        var unlocated = scan with
+        {
+            Observations = scan.Observations
+                .Select(observation => observation with
+                {
+                    Source = observation.Source with { Offset = null, Region = null },
+                })
+                .ToImmutableArray(),
+        };
+
+        VerdictEngine.Evaluate(unlocated).RiskDisposition.Should().NotBe(RiskDisposition.HighRisk);
+    }
+
+    [Fact]
     public void Runtime_and_draft_2020_12_schema_accept_the_same_valid_enum_values()
     {
         foreach (var family in Enum.GetValues<RiskFamily>())
@@ -369,7 +506,11 @@ public sealed class VerdictEngineTests
         foreach (var value in Enum.GetValues<Severity>())
             AssertRuntimeAndSchemaAgree(ScanContractJson.Serialize(TestScan.Complete([baseline with { Severity = value }])), true);
         foreach (var value in Enum.GetValues<ApplicationLinkage>())
+        {
             AssertRuntimeAndSchemaAgree(ScanContractJson.Serialize(TestScan.Complete([baseline with { ApplicationLinkage = value }])), true);
+            var artifactOnly = TestScan.Complete([]) with { Artifacts = [TestScan.Artifact("a", value)] };
+            AssertRuntimeAndSchemaAgree(ScanContractJson.Serialize(artifactOnly), true);
+        }
         foreach (var value in Enum.GetValues<Reachability>())
             AssertRuntimeAndSchemaAgree(ScanContractJson.Serialize(TestScan.Complete([baseline with { Reachability = value }])), true);
         foreach (var value in Enum.GetValues<RecommendedAction>())
@@ -406,18 +547,53 @@ public sealed class VerdictEngineTests
         var oversizedString = valid.Replace(maxString, $"{maxString}x", StringComparison.Ordinal);
         AssertRuntimeAndSchemaAgree(oversizedString, false);
 
-        var findingJson = JsonSerializer.Serialize(
-            TestScan.Finding(RiskFamily.NetworkCommunication),
-            ContractShapeOptions);
+        var repeatedFinding = TestScan.Finding(RiskFamily.NetworkCommunication) with { ObservationIds = ["shared"] };
+        var findingJson = JsonSerializer.Serialize(repeatedFinding, ContractShapeOptions);
         var findingsAtLimit = string.Join(',', Enumerable.Repeat(findingJson, ContractLimits.MaxFindings));
-        var baseJson = ScanContractJson.Serialize(TestScan.Complete([]));
-        var validCollection = baseJson.Replace("\"findings\":[]", $"\"findings\":[{findingsAtLimit}]", StringComparison.Ordinal);
+        var baseJson = ScanContractJson.Serialize(TestScan.Complete([repeatedFinding]));
+        var validCollection = baseJson.Replace(
+            $"\"findings\":[{findingJson}]",
+            $"\"findings\":[{findingsAtLimit}]",
+            StringComparison.Ordinal);
         AssertRuntimeAndSchemaAgree(validCollection, true);
         var oversizedCollection = validCollection.Replace(
             $"\"findings\":[{findingsAtLimit}]",
             $"\"findings\":[{findingsAtLimit},{findingJson}]",
             StringComparison.Ordinal);
         AssertRuntimeAndSchemaAgree(oversizedCollection, false);
+    }
+
+    [Fact]
+    public void Runtime_and_schema_count_non_bmp_text_as_unicode_scalars()
+    {
+        var scalar = char.ConvertFromUtf32(0x1F680);
+        var atLimit = string.Concat(Enumerable.Repeat(scalar, ContractLimits.MaxStringLength));
+        var scan = TestScan.Complete([]) with { SampleName = atLimit };
+        AssertRuntimeAndSchemaAgree(ScanContractJson.Serialize(scan), true);
+
+        var oversizedJson = ScanContractJson.Serialize(TestScan.Complete([]))
+            .Replace("sample.exe", $"{atLimit}{scalar}", StringComparison.Ordinal);
+        AssertRuntimeAndSchemaAgree(oversizedJson, false);
+    }
+
+    [Theory]
+    [InlineData("\\uD800")]
+    [InlineData("\\uDC00")]
+    public void Runtime_and_schema_reject_malformed_surrogates(string escapedSurrogate)
+    {
+        var json = ScanContractJson.Serialize(TestScan.Complete([]))
+            .Replace("sample.exe", escapedSurrogate, StringComparison.Ordinal);
+
+        AssertRuntimeAndSchemaAgree(json, false);
+    }
+
+    [Fact]
+    public void Runtime_rejects_malformed_in_memory_unicode_with_controlled_exception()
+    {
+        var malformed = TestScan.Complete([]) with { SampleName = "\uD800" };
+
+        FluentActions.Invoking(() => ScanContractJson.Serialize(malformed))
+            .Should().Throw<ContractValidationException>();
     }
 
     [Fact]
@@ -428,7 +604,8 @@ public sealed class VerdictEngineTests
         AssertRuntimeAndSchemaAgree(contradictory, false);
 
         var validObservation = new ScanResult(
-            "sample.exe", AnalysisStatus.Complete, ArtifactCompleteness.Complete, [],
+            "sample.exe", AnalysisStatus.Complete, ArtifactCompleteness.Complete,
+            [TestScan.Artifact("a", ApplicationLinkage.Application)],
             [new Observation("o", "kind", "fact", ParserConfidence.High, new SourceLocation("a", null, null))],
             [], []);
         AssertRuntimeAndSchemaAgree(ScanContractJson.Serialize(validObservation), true);
@@ -450,9 +627,9 @@ public sealed class VerdictEngineTests
             "sample.exe",
             AnalysisStatus.Complete,
             ArtifactCompleteness.Complete,
-            [new ArtifactNode("a", "a.exe", new string('a', 64), 1, ArtifactCompleteness.Complete, [])],
+            [new ArtifactNode("a", "a.exe", new string('a', 64), 1, ArtifactCompleteness.Complete, [], ApplicationLinkage.Application)],
             [new Observation("o", "kind", "fact", ParserConfidence.High, new SourceLocation("a", 0, null))],
-            [TestScan.Finding(RiskFamily.NetworkCommunication)],
+            [TestScan.Finding(RiskFamily.NetworkCommunication) with { ObservationIds = ["o"] }],
             []);
         var json = ScanContractJson.Serialize(valid);
         var invalid = mutation switch
@@ -481,8 +658,16 @@ public sealed class VerdictEngineTests
             runtimeValid = false;
         }
 
-        using var document = JsonDocument.Parse(json);
-        var schemaValid = ReportSchema.Value.Evaluate(document.RootElement).IsValid;
+        var schemaValid = false;
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            schemaValid = ReportSchema.Value.Evaluate(document.RootElement).IsValid;
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException)
+        {
+            schemaValid = false;
+        }
 
         runtimeValid.Should().Be(expected);
         schemaValid.Should().Be(expected);
@@ -530,8 +715,28 @@ internal static class TestScan
             Finding(RiskFamily.DataExfiltration, EvidenceStatus.LinkedImplementation, EvidenceConfidence.High, Severity.High),
         ]);
 
-    public static ScanResult Complete(ImmutableArray<CapabilityFinding> findings) =>
+    public static ScanResult Complete(ImmutableArray<CapabilityFinding> findings)
+    {
+        var referenced = findings
+            .SelectMany(finding => finding.ObservationIds.Select(id => (id, finding.ApplicationLinkage)))
+            .Distinct()
+            .ToImmutableArray();
+        var linkages = referenced.Select(item => item.ApplicationLinkage).Distinct().ToImmutableArray();
+        var artifacts = linkages.Select(linkage => Artifact(ArtifactId(linkage), linkage)).ToImmutableArray();
+        var observations = referenced
+            .Select(item => Observation(item.id, ArtifactId(item.ApplicationLinkage)))
+            .ToImmutableArray();
+        return new("sample.exe", AnalysisStatus.Complete, ArtifactCompleteness.Complete, artifacts, observations, findings, []);
+    }
+
+    public static ScanResult CompleteWithoutProvenance(ImmutableArray<CapabilityFinding> findings) =>
         new("sample.exe", AnalysisStatus.Complete, ArtifactCompleteness.Complete, [], [], findings, []);
+
+    public static ArtifactNode Artifact(string id, ApplicationLinkage linkage) =>
+        new(id, $"{id}.bin", new string('a', 64), 1, ArtifactCompleteness.Complete, [], linkage);
+
+    public static Observation Observation(string id, string artifactId) =>
+        new(id, "implementation", "Parsed implementation evidence", ParserConfidence.High, new SourceLocation(artifactId, 0, "code"));
 
     public static CapabilityFinding Finding(
         RiskFamily family,
@@ -549,8 +754,10 @@ internal static class TestScan
             severity,
             linkage,
             Reachability.Linked,
-            [],
+            [$"{family}-{linkage}"],
             [],
             [],
             RecommendedAction.ReviewProvenance);
+
+    private static string ArtifactId(ApplicationLinkage linkage) => $"artifact-{linkage}";
 }

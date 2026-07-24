@@ -92,7 +92,7 @@
     "artifact": {
       "type": "object",
       "additionalProperties": false,
-      "required": [ "id", "name", "sha256", "size", "completeness", "parentIds" ],
+      "required": [ "id", "name", "sha256", "size", "completeness", "parentIds", "applicationLinkage" ],
       "properties": {
         "id": { "$ref": "#/$defs/safeString" },
         "name": { "$ref": "#/$defs/safeString" },
@@ -101,7 +101,8 @@
         "completeness": {
           "enum": [ "complete", "truncated-by-policy", "unsupported", "encrypted", "malformed", "unavailable" ]
         },
-        "parentIds": { "$ref": "#/$defs/stringArray" }
+        "parentIds": { "$ref": "#/$defs/stringArray" },
+        "applicationLinkage": { "enum": [ "application", "dependency", "installer-stub", "unknown" ] }
       }
     },
     "observation": {
@@ -147,7 +148,12 @@
         "severity": { "enum": [ "informational", "low", "medium", "high", "critical" ] },
         "applicationLinkage": { "enum": [ "application", "dependency", "installer-stub", "unknown" ] },
         "reachability": { "enum": [ "confirmed", "linked", "referenced", "unknown" ] },
-        "observationIds": { "$ref": "#/$defs/stringArray" },
+        "observationIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4096,
+          "items": { "$ref": "#/$defs/safeString" }
+        },
         "benignExplanations": { "$ref": "#/$defs/stringArray" },
         "limitations": { "$ref": "#/$defs/stringArray" },
         "recommendedAction": { "enum": [ "review-provenance", "exercise-caution", "do-not-run-and-escalate" ] }

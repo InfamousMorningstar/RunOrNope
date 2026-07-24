@@ -54,8 +54,9 @@ public static class VerdictEngine
 
     private static RiskDisposition DetermineDisposition(ScanResult scan, long total)
     {
+        var observations = scan.Observations.ToDictionary(observation => observation.Id, StringComparer.Ordinal);
         var eligible = scan.Findings
-            .Where(ScoringPolicy.IsStrongApplicationImplementation)
+            .Where(finding => ScoringPolicy.IsStrongApplicationImplementation(finding, observations))
             .ToArray();
         var strongFamilies = eligible
             .Select(finding => finding.Family)

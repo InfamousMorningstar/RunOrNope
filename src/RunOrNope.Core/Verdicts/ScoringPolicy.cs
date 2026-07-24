@@ -40,12 +40,18 @@ public static class ScoringPolicy
         return severity + evidence + confidence;
     }
 
-    public static bool IsStrongApplicationImplementation(CapabilityFinding finding) =>
+    public static bool IsStrongApplicationImplementation(
+        CapabilityFinding finding,
+        IReadOnlyDictionary<string, Observation> observations) =>
         finding.ApplicationLinkage == ApplicationLinkage.Application
         && finding.Family is not RiskFamily.Obfuscation and not RiskFamily.ContextualAnomaly
         && finding.ParserConfidence == ParserConfidence.High
         && finding.EvidenceConfidence == EvidenceConfidence.High
         && finding.EvidenceStatus is EvidenceStatus.ConfirmedStaticImplementation
             or EvidenceStatus.LinkedImplementation
-        && finding.Reachability is Reachability.Confirmed or Reachability.Linked;
+        && finding.Reachability is Reachability.Confirmed or Reachability.Linked
+        && finding.ObservationIds.All(id =>
+            observations.TryGetValue(id, out var observation)
+            && observation.ParserConfidence == ParserConfidence.High
+            && (observation.Source.Offset.HasValue || !string.IsNullOrEmpty(observation.Source.Region)));
 }
