@@ -2,4 +2,7 @@
   <ItemGroup>
     <ProjectReference Include="..\RunOrNope.Contracts\RunOrNope.Contracts.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="AsmResolver.PE" />
+  </ItemGroup>
 </Project>

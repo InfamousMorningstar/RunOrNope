@@ -42,6 +42,19 @@
           "xunit.v3.mtp-v1": "[3.2.2]"
         }
       },
+      "AsmResolver": {
+        "type": "Transitive",
+        "resolved": "6.0.0",
+        "contentHash": "yOTKBIqNvL2tcDKtWhg2snlCGBXeGJyCU09W9vKKqxLj3COe8Ak4Hl3iA0+T3Yq+sPl7UGSVXlm0GWSr2e/K+Q=="
+      },
+      "AsmResolver.PE.File": {
+        "type": "Transitive",
+        "resolved": "6.0.0",
+        "contentHash": "Qrmr46G85Q/MFvNv61rTc7hJmknjqzK9f3boV5zUfHx/1UO5K3xG6F+HI/j271h4Y7kczliFqdbMG3qy3EEOWA==",
+        "dependencies": {
+          "AsmResolver": "6.0.0"
+        }
+      },
       "Humanizer.Core": {
         "type": "Transitive",
         "resolved": "3.0.10",
@@ -197,6 +210,13 @@
           "xunit.v3.runner.common": "[3.2.2]"
         }
       },
+      "runornope.analyzers.pe": {
+        "type": "Project",
+        "dependencies": {
+          "AsmResolver.PE": "[6.0.0, )",
+          "RunOrNope.Contracts": "[1.0.0, )"
+        }
+      },
       "runornope.contracts": {
         "type": "Project"
       },
@@ -210,6 +230,15 @@
         "type": "Project",
         "dependencies": {
           "RunOrNope.Contracts": "[1.0.0, )"
+        }
+      },
+      "AsmResolver.PE": {
+        "type": "CentralTransitive",
+        "requested": "[6.0.0, )",
+        "resolved": "6.0.0",
+        "contentHash": "KWq4qVqdtRZUmqeB9R5aqDqChlyQMLa7lsLmtOQ/pSzQGKZXesnZTztbVw0X5ojKx+SDU9NoXeya0WFmgo/TXg==",
+        "dependencies": {
+          "AsmResolver.PE.File": "6.0.0"
         }
       }
     },

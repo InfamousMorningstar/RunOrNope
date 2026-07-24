@@ -18,6 +18,15 @@ and identifies PE or structurally plausible compound-file
 candidates by bytes instead of extension. A compound-file candidate is not
 claimed to be an MSI until the future MSI analyzer validates it.
 
+The first PE/CLR analyzer slice is also implemented. It performs an independent
+bounds-checked validation of PE headers, sections, data directories, RVA
+mappings, certificate-table ranges, and overlays, then compares that result
+with pinned AsmResolver parsing. Managed metadata and direct IL calls are read
+without loading the submitted assembly. Authenticode certificate records are
+strictly validated and Windows trust is queried against the already-open file
+handle in noninteractive, cache-only mode; offline revocation uncertainty stays
+indeterminate rather than being reported as valid.
+
 The broker can create a unique capability-free AppContainer profile, an
 inheritance-protected output directory limited to the broker and worker SIDs,
 and a Job Object with one-process, memory, CPU, and kill-on-close limits. It
@@ -158,7 +167,12 @@ privacy controls.
 
 ## Current limitations
 
-- Intake identifies root structure and hashes it, but no analyzer or user interface has been implemented.
+- PE/CLR analysis is an isolated component but is not yet wired through the
+  worker protocol or user interface. MSI, nested-content, and capability
+  analyzers are not implemented.
+- The current Authenticode result covers Windows' primary embedded-signature
+  policy result and structurally counts certificate records. Full signer,
+  timestamp, secondary-signature, and catalog enumeration remains unfinished.
 - Worker isolation and transport are implemented and locally security-tested,
   but release-gating OS/enterprise-policy validation is not complete.
 - Release-gating OS targets have not yet completed runtime/security validation.
