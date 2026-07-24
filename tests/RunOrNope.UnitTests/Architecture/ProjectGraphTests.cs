@@ -17,6 +17,29 @@ public sealed class ProjectGraphTests
             .ReferencesFrom("RunOrNope.App")
             .Should().NotContain(name => name.Contains("Analyzers", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public void Repository_restores_must_use_locked_mode_by_default()
+    {
+        var properties = XDocument.Load(RepositoryFiles.PathTo("Directory.Build.props"));
+
+        properties.Descendants("RestoreLockedMode")
+            .Single().Value
+            .Should().Be("true");
+    }
+
+    [Fact]
+    public void Readme_must_publish_an_explicit_windows_build_matrix()
+    {
+        var readme = File.ReadAllText(RepositoryFiles.PathTo("README.md"));
+
+        readme.Should().Contain("10.0.19041");
+        readme.Should().Contain("Windows 11 Pro | 26200 | Locally validated");
+        readme.Should().Contain("Windows 10 Enterprise LTSC 2021 | 19044 | Release-gating target");
+        readme.Should().Contain("Windows 11 Enterprise 24H2 | 26100 | Release-gating target");
+        readme.Should().Contain("All other Windows editions and builds | Any | Unverified");
+        readme.Should().NotContain("- Windows 10 or Windows 11 on x64");
+    }
 }
 
 internal sealed class ProjectGraph
@@ -56,6 +79,21 @@ internal sealed class ProjectGraph
             .OfType<string>()
             .Select(path => Path.GetFileNameWithoutExtension(path))
             .ToArray();
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        return RepositoryFiles.Root;
+    }
+}
+
+internal static class RepositoryFiles
+{
+    public static string Root { get; } = FindRepositoryRoot();
+
+    public static string PathTo(string relativePath)
+    {
+        return Path.Combine(Root, relativePath);
     }
 
     private static string FindRepositoryRoot()

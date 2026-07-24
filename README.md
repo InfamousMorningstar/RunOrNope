@@ -45,9 +45,29 @@ bounded, validated contract data. Isolation failures will fail closed.
 
 ## Build prerequisites
 
-- Windows 10 or Windows 11 on x64
+- An x64 host listed in the build matrix below for release-gating work
 - PowerShell
 - The pinned .NET SDK 10.0.302
+
+### Windows build matrix
+
+The target framework's `windows10.0.19041.0` suffix is the minimum Windows API
+contract available to compiled code. It is not a claim that every Windows build
+from 19041 onward is supported.
+
+| Edition | OS build | Foundation status |
+| --- | ---: | --- |
+| Windows 11 Pro | 26200 | Locally validated for SDK restore, Release build, and unit tests on x64 |
+| Windows 10 Enterprise LTSC 2021 | 19044 | Release-gating target; not yet validated |
+| Windows 11 Enterprise 24H2 | 26100 | Release-gating target; not yet validated |
+| All other Windows editions and builds | Any | Unverified; no compatibility claim |
+
+This foundation validation covers only restore, compilation, and the project
+graph test. Before a release, every release-gating target must pass the planned
+AppContainer, Job Object, mitigation-policy, WinTrust, read-only MSI, long-path,
+and enterprise-policy suites on a then-serviced patch level. The exact serviced
+revision and servicing state will be recorded in release evidence; until those
+gates exist and pass, RunOrNope has no supported runtime configuration.
 
 Install the repository-local SDK with Microsoft's official installer:
 
@@ -61,10 +81,18 @@ Invoke-WebRequest -Uri "https://dot.net/v1/dotnet-install.ps1" -OutFile ".tools\
 Restore, build, and test:
 
 ```powershell
-& .\.tools\dotnet\dotnet.exe restore --use-lock-file
-& .\.tools\dotnet\dotnet.exe restore --locked-mode
+& .\.tools\dotnet\dotnet.exe restore
 & .\.tools\dotnet\dotnet.exe build -c Release --no-restore
 & .\.tools\dotnet\dotnet.exe test -c Release --no-build
+```
+
+Locked restore is enforced centrally, so an ordinary `restore` fails if a
+dependency declaration and its committed lock file disagree. When deliberately
+changing dependencies, regenerate lock files explicitly and review their diff:
+
+```powershell
+& .\.tools\dotnet\dotnet.exe restore -p:RestoreLockedMode=false --force-evaluate
+& .\.tools\dotnet\dotnet.exe restore
 ```
 
 ## Privacy and safety model
@@ -80,7 +108,7 @@ privacy controls.
 
 - No analyzer or user interface has been implemented.
 - No worker isolation or hostile-output validation has been implemented.
-- No serviced Windows build matrix has been published.
+- Release-gating OS targets have not yet completed runtime/security validation.
 - No security claim should be inferred from this scaffold.
 - Risk disposition and analysis completeness contracts are not implemented yet.
 
