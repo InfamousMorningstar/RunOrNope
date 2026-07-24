@@ -79,8 +79,18 @@ The mapper selects `AnalysisStatus` and `ArtifactCompleteness` honestly:
 | Situation | AnalysisStatus | Completeness |
 | --- | --- | --- |
 | `isSupportedPe == false` (bytes are not a PE) | `UnsupportedOrInvalidRootFormat` | `Unsupported` |
-| PE parsed; no `Limitations`; rich parser agreed; trust resolved (`Trusted`/`Untrusted`/`NoSignature`) | `Complete` | `Complete` |
-| PE parsed but any `Limitations` present, or rich parser disagreed, or trust is `IndeterminateOffline` / `PlatformUnavailable` / `Malformed` | `Incomplete` | `TruncatedByPolicy` |
+| PE parsed; no `Limitations`; rich parser agreed; CLR analysis not truncated (`Clr.TruncatedByPolicy == false`); trust resolved (`Trusted`/`Untrusted`/`NoSignature`) | `Complete` | `Complete` |
+| PE parsed but any `Limitations` present, or rich parser disagreed, or `Clr.TruncatedByPolicy == true`, or trust is `IndeterminateOffline` / `PlatformUnavailable` / `Malformed` | `Incomplete` | `TruncatedByPolicy` |
+
+A truncated managed-metadata walk (method or per-method instruction limit reached) is
+partial analysis: a rules engine reading the CLR call graph in a later slice could miss
+capabilities that live in the unwalked methods. Treating `Clr.TruncatedByPolicy` as
+`Complete` would let an attacker pad a managed binary past the walk limits and earn the
+favorable zero-findings verdict — the exact "incompleteness becomes favorable" failure the
+contract forbids. `Clr.UnresolvedEdges` (malformed method bodies) is surfaced in the
+`pe.clr` observation for provenance; it does not by itself force `Incomplete` in this
+structural slice, but the rules-engine slice must reconsider that once findings depend on
+those edges.
 
 This satisfies the contract invariants in `ContractValidator.ValidateCompleteness`:
 a `Complete` result carries only a `Complete` root artifact; an `Incomplete`
