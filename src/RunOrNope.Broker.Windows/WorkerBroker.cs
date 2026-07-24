@@ -217,7 +217,7 @@ public sealed class WorkerBroker : IWorkerBroker
         {
             try { Directory.Delete(outputDirectory, recursive: true); }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            { /* Remains ACL-private; a later broker startup cleanup may retry. */ }
+            { /* Remains ACL-private for deliberate manual inspection and cleanup. */ }
             try
             {
                 RestoreBrokerDeleteAccess(packageDirectory);
@@ -256,8 +256,8 @@ public sealed class WorkerBroker : IWorkerBroker
         if (wait is not NativeMethods.WaitObject0)
         {
             // Closing the enclosing kill-on-close Job is the final bounded
-            // lifecycle control. Cleanup will retain locked private resources
-            // for the strict next-start scavenger rather than racing deletion.
+            // lifecycle control. Cleanup retains locked private resources for
+            // deliberate manual inspection rather than racing deletion.
         }
     }
 
