@@ -7,70 +7,30 @@ uploaded** during local analysis.
 
 ## Current status
 
-This repository currently contains the reproducible .NET 10 solution,
-bounded evidence/verdict contracts, single-handle file intake, and the first
-fail-closed Windows worker-isolation layer. Intake opens
-an input read-only while denying write and delete sharing, records stable
-Windows identity and metadata, accepts local filesystems only, walks every path
-component by held directory handle without following reparse points, opens the
-final file relative to its verified parent, hashes through that owned handle,
-and identifies PE or structurally plausible compound-file
-candidates by bytes instead of extension. A compound-file candidate is not
-claimed to be an MSI until the future MSI analyzer validates it.
+An implementation checkpoint — **not yet a usable scanner**. The security-critical
+building blocks are in place and tested; the analyzers and UI are not wired into an
+end-to-end scan yet.
 
-The first PE/CLR analyzer slice is also implemented. It performs an independent
-bounds-checked validation of PE headers, sections, data directories, RVA
-mappings, certificate-table ranges, and overlays, then compares that result
-with pinned AsmResolver parsing. Managed metadata and direct IL calls are read
-without loading the submitted assembly. Authenticode certificate records are
-strictly validated and Windows trust is queried against the already-open file
-handle in noninteractive, cache-only mode; offline revocation uncertainty stays
-indeterminate rather than being reported as valid.
+Done so far:
 
-The broker can create a unique capability-free AppContainer profile, an
-inheritance-protected output directory limited to the broker and worker SIDs,
-and a Job Object with one-process, memory, CPU, and kill-on-close limits. It
-builds a suspended worker with an explicit four-handle allowlist (sample,
-private output directory, request pipe, response pipe), assigns the Job before resuming, and exchanges
-versioned length-prefixed UTF-8/JSON frames whose size is checked before
-allocation. A streaming token pass rejects duplicate members, excessive depth,
-strings, collections, per-object member counts, and aggregate token counts
-before contract objects are materialized. While the
-worker is still suspended, the broker verifies its AppContainer token, exact
-package SID, zero capabilities, Job membership and limits, effective
-mitigations, and child-process restriction. Any setup, launch, timeout,
-protocol, or result-validation failure
-returns `IsolationUnavailable`; there is no ordinary-process fallback.
+- Reproducible .NET 10 solution with bounded, immutable evidence/verdict contracts.
+- Single-handle file intake: opens the input read-only (deny write/delete sharing),
+  records stable Windows identity, walks paths by held handle without following
+  reparse points, and detects format by bytes rather than extension.
+- Fail-closed worker isolation: a capability-free AppContainer under a kill-on-close
+  Job Object (one process, memory/CPU/wall-clock limits), launched suspended with a
+  four-handle allowlist and a signed, hash-verified worker package. Token, SID,
+  capabilities, Job limits, and mitigations are all verified before resume; any
+  failure returns `IsolationUnavailable` with no ordinary-process fallback. A live
+  security suite (using a generated probe, never malware) checks network, child-process,
+  traversal, reparse, resource-limit, and handle denials.
+- First PE/CLR analyzer slice: independent bounds-checked PE parsing cross-checked
+  against AsmResolver, managed metadata read without loading the assembly, and
+  cache-only, noninteractive Authenticode trust (offline revocation stays
+  indeterminate, never "valid").
 
-This is still an implementation checkpoint, not a usable scanner because the
-actual analyzers and UI are not wired yet. The isolation transport itself now
-completes with a self-contained authenticated worker bundle. Every package file
-is named and SHA-256 hashed in a canonical P-256 ECDSA-signed manifest. Strict
-Windows filename checks reject device names, invalid/trailing characters,
-case collisions, and non-ASCII normalization ambiguity. Files are staged from
-held read-only source handles into a unique worker-readable package directory,
-flushed, hashed again, sealed read/execute-only, and transitioned between
-continuous no-delete handles before a final hash establishes the long-lived
-deny-write/delete launch lock. Any same-user write during that transition is
-detected before launch, and the final handles remain held through worker
-termination. The broker also verifies the suspended
-process image is the exact staged entrypoint. Callers must supply the trusted public key from
-their application trust root; trusting a key stored beside the package would
-defeat the signature.
-
-The live security suite uses local listeners and a dedicated generated probe
-bundle—never a malware sample—to verify denial of IPv4, IPv6, loopback, private
-LAN, HTTP, explicit proxy, WebSocket, DNS packet delivery, child-process creation, and
-unexpected inherited handles. It also verifies safe output writes, traversal
-and reparse denial, memory/CPU/wall-clock limits, and Job kill-on-close. On this
-Windows build, Winsock accepts the isolated raw UDP DNS send locally but the
-controlled listener receives zero bytes; the test measures observed egress over
-a bounded post-result receive window instead of mislabeling a resolver error as
-network denial. Worker termination is awaited before cleanup. Automatic
-crash-leftover scavenging and profile deletion are intentionally disabled:
-names, timestamps, DACLs, and marker files are forgeable by the broker user and
-cannot safely authorize recursive deletion. Normal in-process cleanup remains
-active; crash leftovers require deliberate manual inspection and removal.
+Not done yet: MSI, nested-content, and capability analyzers; YARA-X; the end-to-end
+scan; and the WPF UI. **No security claim should be inferred from this scaffold.**
 
 ## Planned supported root formats
 
