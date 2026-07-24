@@ -8,15 +8,30 @@ uploaded** during local analysis.
 ## Current status
 
 This repository currently contains the reproducible .NET 10 solution,
-bounded evidence/verdict contracts, and single-handle file intake. Intake opens
+bounded evidence/verdict contracts, single-handle file intake, and the first
+fail-closed Windows worker-isolation layer. Intake opens
 an input read-only while denying write and delete sharing, records stable
 Windows identity and metadata, accepts local filesystems only, walks every path
 component by held directory handle without following reparse points, opens the
 final file relative to its verified parent, hashes through that owned handle,
 and identifies PE or structurally plausible compound-file
 candidates by bytes instead of extension. A compound-file candidate is not
-claimed to be an MSI until the future MSI analyzer validates it. It does not yet provide a
-usable desktop application, isolated parser worker, full analyzers, or reports.
+claimed to be an MSI until the future MSI analyzer validates it.
+
+The broker can create a unique capability-free AppContainer profile, an
+inheritance-protected output directory limited to the broker and worker SIDs,
+and a Job Object with one-process, memory, CPU, and kill-on-close limits. It
+builds a suspended worker with an explicit three-handle allowlist (sample,
+request pipe, response pipe), assigns the Job before resuming, and exchanges
+versioned length-prefixed UTF-8/JSON frames whose size is checked before
+allocation. Any setup, launch, timeout, protocol, or result-validation failure
+returns `IsolationUnavailable`; there is no ordinary-process fallback.
+
+This is still an implementation checkpoint, not a usable scanner. The
+framework-dependent development worker cannot load from an ordinary checkout
+inside AppContainer on the locally tested host, so that path is deliberately
+reported as isolation unavailable. A verified, self-contained packaged worker
+and post-launch mitigation/network escape matrix remain release blockers.
 
 ## Planned supported root formats
 
@@ -45,9 +60,10 @@ RunOrNope.App (WPF presentation)
 ```
 
 The WPF project deliberately has no reference to parser projects. The broker
-opens each sample once; a later milestone will start a capability-free AppContainer
-worker under Job Object limits. Hostile worker output will cross back only as
-bounded, validated contract data. Isolation failures will fail closed.
+opens each sample once and passes only a duplicate of that existing handle to a
+capability-free AppContainer worker under Job Object limits. Hostile worker
+output crosses back only as bounded, validated contract data. Isolation
+failures fail closed.
 
 ## Build prerequisites
 
@@ -113,7 +129,9 @@ privacy controls.
 ## Current limitations
 
 - Intake identifies root structure and hashes it, but no analyzer or user interface has been implemented.
-- No worker isolation or hostile-output validation has been implemented.
+- Worker isolation primitives and hostile-output framing are implemented, but
+  the self-contained packaged worker, post-launch mitigation verification, and
+  IPv4/IPv6/loopback/proxy escape matrix are not complete.
 - Release-gating OS targets have not yet completed runtime/security validation.
 - No security claim should be inferred from this scaffold.
 - Contracts and intake are not yet wired into an end-to-end scan.

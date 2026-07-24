@@ -2,5 +2,6 @@
   <ItemGroup>
     <ProjectReference Include="..\RunOrNope.Contracts\RunOrNope.Contracts.csproj" />
     <ProjectReference Include="..\RunOrNope.Intake\RunOrNope.Intake.csproj" />
+    <ProjectReference Include="..\RunOrNope.Worker\RunOrNope.Worker.csproj" />
   </ItemGroup>
 </Project>

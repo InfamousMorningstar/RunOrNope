@@ -162,6 +162,64 @@
           "xunit.v3.extensibility.core": "[3.2.2]",
           "xunit.v3.runner.common": "[3.2.2]"
         }
+      },
+      "runornope.analyzers.content": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Contracts": "[1.0.0, )"
+        }
+      },
+      "runornope.analyzers.msi": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Contracts": "[1.0.0, )"
+        }
+      },
+      "runornope.analyzers.pe": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Contracts": "[1.0.0, )"
+        }
+      },
+      "runornope.broker.windows": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Contracts": "[1.0.0, )",
+          "RunOrNope.Intake": "[1.0.0, )",
+          "RunOrNope.Worker": "[1.0.0, )"
+        }
+      },
+      "runornope.contracts": {
+        "type": "Project"
+      },
+      "runornope.core": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Contracts": "[1.0.0, )"
+        }
+      },
+      "runornope.intake": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Contracts": "[1.0.0, )"
+        }
+      },
+      "runornope.rules": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Contracts": "[1.0.0, )",
+          "RunOrNope.Core": "[1.0.0, )"
+        }
+      },
+      "runornope.worker": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Analyzers.Content": "[1.0.0, )",
+          "RunOrNope.Analyzers.Msi": "[1.0.0, )",
+          "RunOrNope.Analyzers.Pe": "[1.0.0, )",
+          "RunOrNope.Contracts": "[1.0.0, )",
+          "RunOrNope.Rules": "[1.0.0, )"
+        }
       }
     },
     "net10.0-windows10.0.19041/win-x64": {
