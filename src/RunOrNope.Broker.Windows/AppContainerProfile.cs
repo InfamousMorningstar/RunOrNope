@@ -42,6 +42,13 @@ public sealed class AppContainerProfile : IDisposable
     }
 
     internal string CreatePrivateOutputDirectory()
+        => CreatePrivateDirectory(FileSystemRights.Modify | FileSystemRights.Synchronize |
+                                  FileSystemRights.DeleteSubdirectoriesAndFiles);
+
+    internal string CreatePrivatePackageDirectory()
+        => CreatePrivateDirectory(FileSystemRights.ReadAndExecute | FileSystemRights.Synchronize);
+
+    private string CreatePrivateDirectory(FileSystemRights workerRights)
     {
         ObjectDisposedException.ThrowIf(Sid == IntPtr.Zero, this);
         var currentUser = WindowsIdentity.GetCurrent().User
@@ -54,8 +61,7 @@ public sealed class AppContainerProfile : IDisposable
             currentUser, FileSystemRights.FullControl, InheritanceFlags.ContainerInherit |
             InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
         security.AddAccessRule(new FileSystemAccessRule(
-            worker, FileSystemRights.ReadAndExecute | FileSystemRights.Write |
-            FileSystemRights.DeleteSubdirectoriesAndFiles | FileSystemRights.Delete,
+            worker, workerRights,
             InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
             PropagationFlags.None, AccessControlType.Allow));
 
@@ -72,8 +78,6 @@ public sealed class AppContainerProfile : IDisposable
         var rules = actual.GetAccessRules(true, false, typeof(SecurityIdentifier))
             .Cast<FileSystemAccessRule>().ToArray();
         var brokerRights = FileSystemRights.FullControl;
-        var workerRights = FileSystemRights.Modify | FileSystemRights.Synchronize |
-                           FileSystemRights.DeleteSubdirectoriesAndFiles;
         if (!currentUser.Equals(owner) || rules.Length != 2 ||
             !HasExactRule(rules, currentUser, brokerRights) ||
             !HasExactRule(rules, worker, workerRights))

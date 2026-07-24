@@ -1,5 +1,10 @@
 using System.Buffers.Binary;
 using System.Text;
+using System.Collections.Immutable;
+using System.Security.Cryptography;
+using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
 using RunOrNope.Worker;
 using RunOrNope.Broker.Windows;
 using RunOrNope.Contracts;
@@ -100,26 +105,219 @@ public sealed class WorkerEscapeTests
     }
 
     [Fact]
-    public async Task Unpackaged_dev_worker_fails_closed_when_appcontainer_cannot_load_runtime()
+    public async Task Authenticated_self_contained_worker_completes_benign_ipc()
     {
         var path = Path.Combine(Path.GetTempPath(), $"runornope-benign-{Guid.NewGuid():N}.bin");
         await File.WriteAllBytesAsync(path, [0x4D, 0x5A, 0, 0],
             TestContext.Current.CancellationToken);
         try
         {
-            using var handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-            var broker = new WorkerBroker(
-                Path.Combine(AppContext.BaseDirectory, "RunOrNope.Worker.exe"));
+            using var handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read,
+                FileShare.Read | FileShare.Delete);
+            var (root, manifest) = CreateAuthenticatedPackage(
+                "RunOrNope.Worker", "RunOrNope.Worker.exe");
+            var broker = new WorkerBroker(root, manifest);
 
             var result = await broker.AnalyzeAsync(
                 handle, new ScanRequest(path, ScanMode.Quick), TestContext.Current.CancellationToken);
 
-            Assert.Equal(AnalysisStatus.IsolationUnavailable, result.AnalysisStatus);
-            Assert.Empty(result.Findings);
+            Assert.True(result.AnalysisStatus == AnalysisStatus.Incomplete,
+                string.Join(Environment.NewLine, result.CountervailingFacts));
+            Assert.Contains(result.CountervailingFacts,
+                value => value.Contains("isolated worker started", StringComparison.OrdinalIgnoreCase));
         }
         finally
         {
             File.Delete(path);
         }
+    }
+
+    [Fact]
+    public async Task Live_appcontainer_denies_network_dns_proxy_websocket_and_http()
+    {
+        using var ipv4 = new TcpListener(IPAddress.Loopback, 0);
+        using var ipv6 = new TcpListener(IPAddress.IPv6Loopback, 0);
+        using var proxy = new TcpListener(IPAddress.Loopback, 0);
+        var privateAddress = Dns.GetHostAddresses(Dns.GetHostName())
+            .First(address => address.AddressFamily == AddressFamily.InterNetwork &&
+                              !IPAddress.IsLoopback(address));
+        using var privateListener = new TcpListener(privateAddress, 0);
+        ipv4.Start(); ipv6.Start(); proxy.Start(); privateListener.Start();
+        var path = Path.Combine(Path.GetTempPath(), $"runornope-probe-{Guid.NewGuid():N}.bin");
+        var outside = Directory.CreateTempSubdirectory("runornope-outside-");
+        await File.WriteAllBytesAsync(path, [1], TestContext.Current.CancellationToken);
+        try
+        {
+            var (root, manifest) = CreateAuthenticatedPackage(
+                "RunOrNope.IsolationProbe", "RunOrNope.IsolationProbe.exe");
+            var broker = new WorkerBroker(root, manifest, prepareOutputForTesting: output =>
+                Directory.CreateSymbolicLink(Path.Combine(output, "escape-link"), outside.FullName));
+            using var handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read,
+                FileShare.Read | FileShare.Delete);
+            var result = await broker.AnalyzeProbeAsync(handle, new WorkerProbeRequest(
+                "matrix",
+                ((IPEndPoint)ipv4.LocalEndpoint).Port,
+                ((IPEndPoint)ipv6.LocalEndpoint).Port,
+                ((IPEndPoint)proxy.LocalEndpoint).Port,
+                privateAddress.ToString(),
+                ((IPEndPoint)privateListener.LocalEndpoint).Port),
+                TestContext.Current.CancellationToken);
+
+            Assert.True(result.AnalysisStatus == AnalysisStatus.Incomplete,
+                string.Join(Environment.NewLine, result.CountervailingFacts));
+            foreach (var name in new[] { "ipv4", "ipv6", "private", "http", "proxy", "websocket", "dns" })
+                Assert.Contains($"probe:{name}=denied", result.CountervailingFacts);
+            Assert.Contains("probe:output-write=allowed", result.CountervailingFacts);
+            Assert.Contains("probe:output-traversal=denied", result.CountervailingFacts);
+            Assert.Contains("probe:output-reparse=denied", result.CountervailingFacts);
+            Assert.Empty(outside.EnumerateFileSystemInfos());
+            Assert.False(ipv4.Pending());
+            Assert.False(ipv6.Pending());
+            Assert.False(proxy.Pending());
+            Assert.False(privateListener.Pending());
+        }
+        finally
+        {
+            File.Delete(path);
+            outside.Delete(true);
+        }
+    }
+
+    [Fact]
+    public async Task Live_appcontainer_and_job_deny_child_process_creation()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"runornope-child-{Guid.NewGuid():N}.bin");
+        await File.WriteAllBytesAsync(path, [1], TestContext.Current.CancellationToken);
+        try
+        {
+            var (root, manifest) = CreateAuthenticatedPackage(
+                "RunOrNope.IsolationProbe", "RunOrNope.IsolationProbe.exe");
+            var broker = new WorkerBroker(root, manifest);
+            using var handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read,
+                FileShare.Read | FileShare.Delete);
+            var result = await broker.AnalyzeProbeAsync(handle,
+                new WorkerProbeRequest("child"), TestContext.Current.CancellationToken);
+            Assert.Equal(AnalysisStatus.Incomplete, result.AnalysisStatus);
+            Assert.Contains("probe:child=denied", result.CountervailingFacts);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task Explicit_handle_list_does_not_inherit_unlisted_broker_handle()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"runornope-handles-{Guid.NewGuid():N}.bin");
+        var sentinelPath = Path.Combine(Path.GetTempPath(), $"runornope-unlisted-{Guid.NewGuid():N}.bin");
+        await File.WriteAllBytesAsync(path, [1], TestContext.Current.CancellationToken);
+        await File.WriteAllBytesAsync(sentinelPath, [2], TestContext.Current.CancellationToken);
+        try
+        {
+            var (root, manifest) = CreateAuthenticatedPackage(
+                "RunOrNope.IsolationProbe", "RunOrNope.IsolationProbe.exe");
+            var broker = new WorkerBroker(root, manifest);
+            using var handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read,
+                FileShare.Read | FileShare.Delete);
+            using var sentinel = File.OpenHandle(sentinelPath, FileMode.Open, FileAccess.Read,
+                FileShare.Read | FileShare.Delete);
+            Assert.True(NativeMethods.SetHandleInformation(
+                sentinel, NativeMethods.HandleFlagInherit, NativeMethods.HandleFlagInherit));
+            var result = await broker.AnalyzeProbeAsync(handle,
+                new WorkerProbeRequest("handle", SentinelHandle: sentinel.DangerousGetHandle().ToInt64()),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(AnalysisStatus.Incomplete, result.AnalysisStatus);
+            Assert.Contains("probe:unexpected-handle=denied", result.CountervailingFacts);
+        }
+        finally
+        {
+            File.Delete(path);
+            File.Delete(sentinelPath);
+        }
+    }
+
+    [Fact]
+    public async Task Closing_job_object_terminates_a_live_probe()
+    {
+        var (root, _) = CreateAuthenticatedPackage(
+            "RunOrNope.IsolationProbe", "RunOrNope.IsolationProbe.exe");
+        using var process = Process.Start(new ProcessStartInfo(
+            Path.Combine(root, "RunOrNope.IsolationProbe.exe"), "--wait")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true
+        });
+        Assert.NotNull(process);
+        var job = JobObject.Create(WorkerIsolationPolicy.Default);
+        try
+        {
+            Assert.True(NativeMethods.AssignProcessToJobObject(
+                job.Handle, process.SafeHandle.DangerousGetHandle()));
+            Assert.False(process.HasExited);
+        }
+        finally
+        {
+            job.Dispose();
+        }
+        await process.WaitForExitAsync(TestContext.Current.CancellationToken)
+            .WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        Assert.True(process.HasExited);
+    }
+
+    [Theory]
+    [InlineData("memory")]
+    [InlineData("cpu")]
+    [InlineData("timeout")]
+    public async Task Live_job_and_broker_limits_stop_hostile_worker(string operation)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"runornope-limit-{Guid.NewGuid():N}.bin");
+        await File.WriteAllBytesAsync(path, [1], TestContext.Current.CancellationToken);
+        try
+        {
+            var (root, manifest) = CreateAuthenticatedPackage(
+                "RunOrNope.IsolationProbe", "RunOrNope.IsolationProbe.exe");
+            var baseline = WorkerIsolationPolicy.Default;
+            var policy = baseline with
+            {
+                ProcessMemoryBytes = operation == "memory" ? 64L * 1024 * 1024 : baseline.ProcessMemoryBytes,
+                ProcessCpuTime = operation == "cpu" ? TimeSpan.FromMilliseconds(500) : baseline.ProcessCpuTime,
+                WallClockTimeout = operation == "timeout" ? TimeSpan.FromMilliseconds(500) : TimeSpan.FromSeconds(10)
+            };
+            var broker = new WorkerBroker(root, manifest, policy);
+            using var handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read,
+                FileShare.Read | FileShare.Delete);
+            var result = await broker.AnalyzeProbeAsync(handle,
+                new WorkerProbeRequest(operation), TestContext.Current.CancellationToken);
+
+            Assert.Equal(AnalysisStatus.IsolationUnavailable, result.AnalysisStatus);
+            Assert.Empty(result.Findings);
+        }
+        finally { File.Delete(path); }
+    }
+
+    private static (string Root, WorkerPackageManifest Manifest) CreateAuthenticatedPackage(
+        string projectName, string entryPoint)
+    {
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !File.Exists(Path.Combine(root.FullName, "RunOrNope.slnx")))
+            root = root.Parent;
+        Assert.NotNull(root);
+        var projectRoot = projectName == "RunOrNope.Worker" ? "src" : "tests";
+        var packageRoot = Path.Combine(root.FullName, projectRoot, projectName, "bin", "Release",
+            "net10.0-windows10.0.19041.0", "win-x64");
+        var entries = Directory.EnumerateFiles(packageRoot)
+            .Where(path => !path.EndsWith(".pdb", StringComparison.OrdinalIgnoreCase))
+            .Select(path =>
+            {
+                using var stream = File.OpenRead(path);
+                return new WorkerPackageFile(Path.GetFileName(path),
+                    Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant(), stream.Length);
+            })
+            .OrderBy(entry => entry.Name, StringComparer.Ordinal)
+            .ToImmutableArray();
+        var document = new WorkerPackageDocument(1, "test-build", entryPoint, entries);
+        using var signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var json = WorkerPackageManifest.Serialize(document);
+        return (packageRoot, WorkerPackageManifest.Authenticate(
+            json, signer.SignData(json, HashAlgorithmName.SHA256),
+            signer.ExportSubjectPublicKeyInfo()));
     }
 }

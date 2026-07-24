@@ -13,6 +13,7 @@
     <Project Path="src/RunOrNope.Worker/RunOrNope.Worker.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/RunOrNope.IsolationProbe/RunOrNope.IsolationProbe.csproj" />
     <Project Path="tests/RunOrNope.IntegrationTests/RunOrNope.IntegrationTests.csproj" />
     <Project Path="tests/RunOrNope.SecurityTests/RunOrNope.SecurityTests.csproj" />
     <Project Path="tests/RunOrNope.UnitTests/RunOrNope.UnitTests.csproj" />

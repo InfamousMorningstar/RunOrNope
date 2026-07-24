@@ -82,6 +82,7 @@ public sealed class AppContainerTests
     public void Private_output_directory_grants_only_broker_and_worker_sid()
     {
         using var profile = AppContainerProfile.Create();
+        using var unrelated = AppContainerProfile.Create();
         var path = profile.CreatePrivateOutputDirectory();
         try
         {
@@ -93,11 +94,32 @@ public sealed class AppContainerTests
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             Assert.Contains(WindowsIdentity.GetCurrent().User!.Value, identities);
             Assert.Contains(profile.SidString, identities);
+            Assert.DoesNotContain(unrelated.SidString, identities);
             Assert.DoesNotContain(new SecurityIdentifier(WellKnownSidType.WorldSid, null).Value, identities);
         }
         finally
         {
             Directory.Delete(path, recursive: true);
         }
+    }
+
+    [Fact]
+    public void Private_package_directory_is_read_execute_only_for_worker()
+    {
+        using var profile = AppContainerProfile.Create();
+        var path = profile.CreatePrivatePackageDirectory();
+        try
+        {
+            var rules = new DirectoryInfo(path).GetAccessControl()
+                .GetAccessRules(true, false, typeof(SecurityIdentifier))
+                .Cast<FileSystemAccessRule>();
+            var worker = Assert.Single(rules, rule =>
+                rule.IdentityReference.Value.Equals(profile.SidString, StringComparison.OrdinalIgnoreCase));
+            Assert.Equal(FileSystemRights.ReadAndExecute | FileSystemRights.Synchronize,
+                worker.FileSystemRights);
+            Assert.Equal(AccessControlType.Allow, worker.AccessControlType);
+            Assert.False(worker.IsInherited);
+        }
+        finally { Directory.Delete(path, true); }
     }
 }

@@ -21,8 +21,8 @@ claimed to be an MSI until the future MSI analyzer validates it.
 The broker can create a unique capability-free AppContainer profile, an
 inheritance-protected output directory limited to the broker and worker SIDs,
 and a Job Object with one-process, memory, CPU, and kill-on-close limits. It
-builds a suspended worker with an explicit three-handle allowlist (sample,
-request pipe, response pipe), assigns the Job before resuming, and exchanges
+builds a suspended worker with an explicit four-handle allowlist (sample,
+private output directory, request pipe, response pipe), assigns the Job before resuming, and exchanges
 versioned length-prefixed UTF-8/JSON frames whose size is checked before
 allocation. A streaming token pass rejects duplicate members, excessive depth,
 strings, and collections before contract objects are materialized. While the
@@ -32,11 +32,20 @@ mitigations, and child-process restriction. Any setup, launch, timeout,
 protocol, or result-validation failure
 returns `IsolationUnavailable`; there is no ordinary-process fallback.
 
-This is still an implementation checkpoint, not a usable scanner. The
-framework-dependent development worker cannot load from an ordinary checkout
-inside AppContainer on the locally tested host, so that path is deliberately
-reported as isolation unavailable. A verified, self-contained packaged worker
-and the full live network/resource escape matrix remain release blockers.
+This is still an implementation checkpoint, not a usable scanner because the
+actual analyzers and UI are not wired yet. The isolation transport itself now
+completes with a self-contained authenticated worker bundle. Every package file
+is named and SHA-256 hashed in an ECDSA-signed manifest, staged from held
+read-only source handles into a unique worker-readable/package directory, and
+hashed again before launch. Callers must supply the trusted public key from
+their application trust root; trusting a key stored beside the package would
+defeat the signature.
+
+The live security suite uses local listeners and a dedicated generated probe
+bundle—never a malware sample—to verify denial of IPv4, IPv6, loopback, private
+LAN, HTTP, explicit proxy, WebSocket, DNS, child-process creation, and
+unexpected inherited handles. It also verifies safe output writes, traversal
+and reparse denial, memory/CPU/wall-clock limits, and Job kill-on-close.
 
 ## Planned supported root formats
 
@@ -134,9 +143,8 @@ privacy controls.
 ## Current limitations
 
 - Intake identifies root structure and hashes it, but no analyzer or user interface has been implemented.
-- Worker isolation primitives and hostile-output framing are implemented, but
-  an authenticated immutable worker manifest, successful packaged-worker IPC,
-  and the IPv4/IPv6/loopback/proxy/resource escape matrix are not complete.
+- Worker isolation and transport are implemented and locally security-tested,
+  but release-gating OS/enterprise-policy validation is not complete.
 - Release-gating OS targets have not yet completed runtime/security validation.
 - No security claim should be inferred from this scaffold.
 - Contracts and intake are not yet wired into an end-to-end scan.

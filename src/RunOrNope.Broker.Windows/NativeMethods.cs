@@ -36,6 +36,7 @@ internal static class NativeMethods
     internal const uint OpenExisting = 3;
     internal const uint FileFlagBackupSemantics = 0x02000000;
     internal const uint FileFlagOpenReparsePoint = 0x00200000;
+    internal const uint HandleFlagInherit = 0x1;
     internal const int TokenIsAppContainer = 29;
     internal const int TokenCapabilities = 30;
     internal const int TokenAppContainerSid = 31;
@@ -123,10 +124,20 @@ internal static class NativeMethods
     internal static extern bool GetProcessMitigationPolicy(
         IntPtr process, int policy, out uint buffer, nuint length);
 
+    [DllImport("kernel32.dll", EntryPoint = "GetProcessMitigationPolicy", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetProcessMitigationPolicy64(
+        IntPtr process, int policy, out ulong buffer, nuint length);
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     internal static extern SafeFileHandle CreateFileW(
         string name, uint desiredAccess, uint shareMode, IntPtr securityAttributes,
         uint creationDisposition, uint flagsAndAttributes, IntPtr template);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool SetHandleInformation(
+        SafeFileHandle handle, uint mask, uint flags);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

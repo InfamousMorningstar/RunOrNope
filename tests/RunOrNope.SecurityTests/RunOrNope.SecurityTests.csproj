@@ -11,4 +11,12 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\RunOrNope.Broker.Windows\RunOrNope.Broker.Windows.csproj" />
   </ItemGroup>
+  <Target Name="BuildSelfContainedWorker" BeforeTargets="Build">
+    <MSBuild Projects="..\..\src\RunOrNope.Worker\RunOrNope.Worker.csproj"
+             Targets="Build"
+             Properties="Configuration=$(Configuration);RuntimeIdentifier=win-x64;SelfContained=true" />
+    <MSBuild Projects="..\RunOrNope.IsolationProbe\RunOrNope.IsolationProbe.csproj"
+             Targets="Build"
+             Properties="Configuration=$(Configuration);RuntimeIdentifier=win-x64;SelfContained=true" />
+  </Target>
 </Project>

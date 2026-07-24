@@ -8,7 +8,17 @@ namespace RunOrNope.Worker;
 
 public sealed class WorkerProtocolException(string message, Exception? inner = null) : IOException(message, inner);
 
-public sealed record WorkerRequestEnvelope(int Version, string Mode, long SampleSize);
+public sealed record WorkerProbeRequest(
+    string Operation,
+    int Ipv4Port = 0,
+    int Ipv6Port = 0,
+    int ProxyPort = 0,
+    string? PrivateAddress = null,
+    int PrivatePort = 0,
+    long SentinelHandle = 0);
+
+public sealed record WorkerRequestEnvelope(
+    int Version, string Mode, long SampleSize, WorkerProbeRequest? Probe = null);
 
 public static class WorkerProtocol
 {
@@ -89,6 +99,16 @@ public static class WorkerProtocol
         if (request.Version != CurrentVersion) throw new WorkerProtocolException("Unsupported protocol version.");
         if (request.Mode is not ("quick" or "deep")) throw new WorkerProtocolException("Unsupported scan mode.");
         if (request.SampleSize < 0) throw new WorkerProtocolException("Invalid sample size.");
+        if (request.Probe is { } probe)
+        {
+            if (probe.Operation.Length is 0 or > 64 ||
+                probe.PrivateAddress is { Length: > 128 } ||
+                probe.Ipv4Port is < 0 or > 65535 ||
+                probe.Ipv6Port is < 0 or > 65535 ||
+                probe.ProxyPort is < 0 or > 65535 ||
+                probe.PrivatePort is < 0 or > 65535)
+                throw new WorkerProtocolException("Invalid isolation probe request.");
+        }
         return request;
     }
 

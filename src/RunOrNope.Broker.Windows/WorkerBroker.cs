@@ -16,19 +16,46 @@ public interface IWorkerBroker
 public sealed class WorkerBroker : IWorkerBroker
 {
     private readonly string _workerExecutable;
+    private readonly string? _packageSourceRoot;
+    private readonly WorkerPackageManifest? _packageManifest;
+    private readonly Action<string>? _prepareOutputForTesting;
     private readonly WorkerIsolationPolicy _policy;
 
     public WorkerBroker() : this(
-        Path.Combine(AppContext.BaseDirectory, "RunOrNope.Worker.exe"),
-        WorkerIsolationPolicy.Default)
+        string.Empty, packageManifest: null, WorkerIsolationPolicy.Default, trusted: true)
     {
     }
 
-    internal WorkerBroker(string workerExecutable, WorkerIsolationPolicy? policy = null)
+    private WorkerBroker(
+        string packageSourceRoot, WorkerPackageManifest? packageManifest,
+        WorkerIsolationPolicy policy, bool trusted, Action<string>? prepareOutputForTesting = null)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(workerExecutable);
-        _workerExecutable = workerExecutable;
-        _policy = policy ?? WorkerIsolationPolicy.Default;
+        _ = trusted;
+        _packageSourceRoot = packageSourceRoot;
+        _packageManifest = packageManifest;
+        _workerExecutable = packageManifest is null
+            ? string.Empty
+            : Path.Combine(packageSourceRoot, packageManifest.Document.EntryPoint);
+        _policy = policy;
+        _prepareOutputForTesting = prepareOutputForTesting;
+    }
+
+    internal WorkerBroker(
+        string packageSourceRoot, WorkerPackageManifest packageManifest,
+        WorkerIsolationPolicy? policy = null, Action<string>? prepareOutputForTesting = null) : this(
+            packageSourceRoot, packageManifest, policy ?? WorkerIsolationPolicy.Default,
+            trusted: true, prepareOutputForTesting) { }
+
+    public static IWorkerBroker CreateAuthenticated(
+        string packageSourceRoot, byte[] manifestJson, byte[] signature, byte[] trustedPublicKey)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(packageSourceRoot);
+        ArgumentNullException.ThrowIfNull(manifestJson);
+        ArgumentNullException.ThrowIfNull(signature);
+        ArgumentNullException.ThrowIfNull(trustedPublicKey);
+        return new WorkerBroker(packageSourceRoot,
+            WorkerPackageManifest.Authenticate(manifestJson, signature, trustedPublicKey),
+            WorkerIsolationPolicy.Default, trusted: true);
     }
 
     public async Task<ScanResult> AnalyzeAsync(
@@ -43,7 +70,23 @@ public sealed class WorkerBroker : IWorkerBroker
         try
         {
             _ = GetSampleSize(sampleHandle);
-            return await AnalyzeIsolatedAsync(sampleHandle, request, cancellationToken).ConfigureAwait(false);
+            return await AnalyzeIsolatedAsync(sampleHandle, request, null, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            exception is IsolationUnavailableException or IOException or UnauthorizedAccessException or
+                WorkerProtocolException or ContractValidationException)
+        {
+            return MapIsolationFailure(exception);
+        }
+    }
+
+    internal async Task<ScanResult> AnalyzeProbeAsync(
+        SafeFileHandle sampleHandle, WorkerProbeRequest probe, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await AnalyzeIsolatedAsync(sampleHandle,
+                new ScanRequest(string.Empty, ScanMode.Quick), probe, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (
             exception is IsolationUnavailableException or IOException or UnauthorizedAccessException or
@@ -68,17 +111,24 @@ public sealed class WorkerBroker : IWorkerBroker
     }
 
     private async Task<ScanResult> AnalyzeIsolatedAsync(
-        SafeFileHandle sampleHandle, ScanRequest request, CancellationToken cancellationToken)
+        SafeFileHandle sampleHandle, ScanRequest request, WorkerProbeRequest? probe,
+        CancellationToken cancellationToken)
     {
-        if (!Path.IsPathFullyQualified(_workerExecutable) || !File.Exists(_workerExecutable))
-            throw new IsolationUnavailableException("The packaged worker executable is unavailable.");
+        if (_packageManifest is null)
+            throw new IsolationUnavailableException("An authenticated packaged worker manifest is required.");
+        if (!Path.IsPathFullyQualified(_workerExecutable))
+            throw new IsolationUnavailableException("The packaged worker root is invalid.");
         if (_policy.CapabilitySids.Count != 0)
             throw new IsolationUnavailableException("Worker network or other capabilities are forbidden.");
 
         using var profile = AppContainerProfile.Create();
         var outputDirectory = profile.CreatePrivateOutputDirectory();
+        var packageDirectory = profile.CreatePrivatePackageDirectory();
         try
         {
+            _prepareOutputForTesting?.Invoke(outputDirectory);
+            var launchExecutable = WorkerPackageStager.Stage(
+                _packageSourceRoot!, packageDirectory, _packageManifest);
             using var job = JobObject.Create(_policy);
             using var outputHandle = OpenPrivateOutput(outputDirectory);
             using var requestPipe = new AnonymousPipeServerStream(
@@ -98,7 +148,7 @@ public sealed class WorkerBroker : IWorkerBroker
                         responsePipe.ClientSafePipeHandle.DangerousGetHandle()],
                        _policy))
             {
-                var command = $"\"{_workerExecutable}\" --broker " +
+                var command = $"\"{launchExecutable}\" --broker " +
                               $"{childSample.DangerousGetHandle()} " +
                               $"{outputHandle.DangerousGetHandle()} " +
                               $"{requestPipe.ClientSafePipeHandle.DangerousGetHandle()} " +
@@ -108,9 +158,9 @@ public sealed class WorkerBroker : IWorkerBroker
                     StartupInfo = { Cb = checked((uint)Marshal.SizeOf<NativeMethods.StartupInfoEx>()) },
                     AttributeList = attributes.Pointer
                 };
-                if (!NativeMethods.CreateProcessW(_workerExecutable, command, IntPtr.Zero, IntPtr.Zero,
+                if (!NativeMethods.CreateProcessW(launchExecutable, command, IntPtr.Zero, IntPtr.Zero,
                         true, NativeMethods.CreateSuspended | NativeMethods.ExtendedStartupInfoPresent,
-                        IntPtr.Zero, Path.GetDirectoryName(_workerExecutable), ref startup, out var process))
+                        IntPtr.Zero, packageDirectory, ref startup, out var process))
                     throw new IsolationUnavailableException(
                         $"The AppContainer worker could not be created (error {Marshal.GetLastWin32Error()}).");
 
@@ -129,7 +179,7 @@ public sealed class WorkerBroker : IWorkerBroker
                     var envelope = new WorkerRequestEnvelope(
                         WorkerProtocol.CurrentVersion,
                         request.Mode == ScanMode.Quick ? "quick" : "deep",
-                        GetSampleSize(sampleHandle));
+                        GetSampleSize(sampleHandle), probe);
                     await WorkerProtocol.WriteJsonFrameAsync(requestPipe, envelope, cancellationToken)
                         .ConfigureAwait(false);
                     var readTask = WorkerProtocol.ReadScanResultAsync(
@@ -156,6 +206,9 @@ public sealed class WorkerBroker : IWorkerBroker
             try { Directory.Delete(outputDirectory, recursive: true); }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             { /* Remains ACL-private; a later broker startup cleanup may retry. */ }
+            try { Directory.Delete(packageDirectory, recursive: true); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            { /* Remains ACL-private and read-only to the disposed worker SID. */ }
         }
     }
 
@@ -177,6 +230,13 @@ public sealed class WorkerBroker : IWorkerBroker
         {
             handle.Dispose();
             throw new IsolationUnavailableException("The private output directory handle could not be opened.");
+        }
+        if (!NativeMethods.SetHandleInformation(
+                handle, NativeMethods.HandleFlagInherit, NativeMethods.HandleFlagInherit))
+        {
+            handle.Dispose();
+            throw new IsolationUnavailableException(
+                "The private output directory handle could not be allowlisted for inheritance.");
         }
         return handle;
     }
@@ -218,7 +278,9 @@ public sealed class WorkerBroker : IWorkerBroker
             limits.LimitFlags != JobObject.RequiredLimitFlags || !limits.KillOnClose)
             throw new IsolationUnavailableException("The worker Job limits changed after assignment.");
 
-        RequireMitigation(process, 0, 1, "DEP");
+        if (!NativeMethods.GetProcessMitigationPolicy64(process, 0, out var dep, sizeof(ulong)) ||
+            (dep & 1) == 0)
+            throw new IsolationUnavailableException("The effective DEP mitigation was not verified.");
         RequireMitigation(process, 1, 0b111, "ASLR");
         RequireMitigation(process, 6, 1, "extension-point disable");
         RequireMitigation(process, 7, 1, "CFG");
