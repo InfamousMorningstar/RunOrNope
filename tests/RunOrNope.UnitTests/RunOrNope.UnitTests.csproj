@@ -13,5 +13,6 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\RunOrNope.Contracts\RunOrNope.Contracts.csproj" />
     <ProjectReference Include="..\..\src\RunOrNope.Core\RunOrNope.Core.csproj" />
+    <ProjectReference Include="..\..\src\RunOrNope.Intake\RunOrNope.Intake.csproj" />
   </ItemGroup>
 </Project>

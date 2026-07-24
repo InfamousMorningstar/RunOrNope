@@ -162,6 +162,15 @@
           "xunit.v3.extensibility.core": "[3.2.2]",
           "xunit.v3.runner.common": "[3.2.2]"
         }
+      },
+      "runornope.contracts": {
+        "type": "Project"
+      },
+      "runornope.intake": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Contracts": "[1.0.0, )"
+        }
       }
     },
     "net10.0-windows10.0.19041/win-x64": {

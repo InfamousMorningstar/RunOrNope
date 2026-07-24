@@ -7,10 +7,12 @@ uploaded** during local analysis.
 
 ## Current status
 
-This repository currently contains only the reproducible .NET 10 solution
-foundation and project-boundary test. It does not yet scan files, provide a
-usable desktop application, isolate a worker, produce verdicts, or generate
-reports. Those capabilities remain roadmap items.
+This repository currently contains the reproducible .NET 10 solution,
+bounded evidence/verdict contracts, and single-handle file intake. Intake opens
+an input read-only while denying write and delete sharing, records stable
+Windows identity and metadata, hashes through that owned handle, and detects
+PE/CFBF structure by bytes instead of extension. It does not yet provide a
+usable desktop application, isolated parser worker, full analyzers, or reports.
 
 ## Planned supported root formats
 
@@ -38,8 +40,8 @@ RunOrNope.App (WPF presentation)
                               `-- Rules
 ```
 
-The WPF project deliberately has no reference to parser projects. The planned
-broker will open each sample once and start a capability-free AppContainer
+The WPF project deliberately has no reference to parser projects. The broker
+opens each sample once; a later milestone will start a capability-free AppContainer
 worker under Job Object limits. Hostile worker output will cross back only as
 bounded, validated contract data. Isolation failures will fail closed.
 
@@ -97,7 +99,7 @@ changing dependencies, regenerate lock files explicitly and review their diff:
 
 ## Privacy and safety model
 
-Local analysis is planned to have no network access and must not execute, load,
+Local analysis has no network feature and must not execute, load,
 install, repair, shell-open, preview, or resolve sample-controlled content.
 No file upload is planned. A future, separate VirusTotal action may disclose
 only the SHA-256 hash after explicit confirmation; it will never upload a
@@ -106,11 +108,11 @@ privacy controls.
 
 ## Current limitations
 
-- No analyzer or user interface has been implemented.
+- Intake identifies root structure and hashes it, but no analyzer or user interface has been implemented.
 - No worker isolation or hostile-output validation has been implemented.
 - Release-gating OS targets have not yet completed runtime/security validation.
 - No security claim should be inferred from this scaffold.
-- Risk disposition and analysis completeness contracts are not implemented yet.
+- Contracts and intake are not yet wired into an end-to-end scan.
 
 ## Roadmap
 

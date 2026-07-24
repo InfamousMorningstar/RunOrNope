@@ -205,6 +205,12 @@
         "dependencies": {
           "RunOrNope.Contracts": "[1.0.0, )"
         }
+      },
+      "runornope.intake": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Contracts": "[1.0.0, )"
+        }
       }
     },
     "net10.0-windows10.0.19041/win-x64": {
