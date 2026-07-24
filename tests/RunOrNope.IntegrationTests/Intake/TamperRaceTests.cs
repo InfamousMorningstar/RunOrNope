@@ -1,10 +1,34 @@
 using RunOrNope.Intake;
+using Microsoft.Win32.SafeHandles;
+using System.Runtime.InteropServices;
 using Xunit;
 
 namespace RunOrNope.IntegrationTests.Intake;
 
 public sealed class TamperRaceTests
 {
+    [Fact]
+    public async Task CompatiblySharedWritableAncestorDoesNotBlockIntake()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var sample = Path.Combine(root, "sample.exe");
+        await File.WriteAllBytesAsync(sample, new byte[128], TestContext.Current.CancellationToken);
+        try
+        {
+            using var directory = CreateFileW(root, 0x00000100 | 0x00010000,
+                0x00000001 | 0x00000002 | 0x00000004, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero);
+            Assert.False(directory.IsInvalid);
+            using var lease = await SafeFileIntake.OpenAsync(
+                sample, new IntakePolicy(1024), TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            if (File.Exists(sample)) File.Delete(sample);
+            if (Directory.Exists(root)) Directory.Delete(root);
+        }
+    }
+
     [Fact]
     public async Task RejectsDirectoryInput()
     {
@@ -100,4 +124,8 @@ public sealed class TamperRaceTests
             if (File.Exists(replacement)) File.Delete(replacement);
         }
     }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFileW(string fileName, uint desiredAccess, uint shareMode,
+        IntPtr securityAttributes, uint creationDisposition, uint flagsAndAttributes, IntPtr templateFile);
 }

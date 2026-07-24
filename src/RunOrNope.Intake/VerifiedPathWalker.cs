@@ -16,6 +16,14 @@ internal interface IRelativePathNative
 
 internal static class VerifiedPathWalker
 {
+    private readonly record struct DirectorySecuritySnapshot(
+        FileIdentity Identity, bool IsDirectory, bool IsDeletePending, bool IsReparse)
+    {
+        internal static DirectorySecuritySnapshot From(FileSnapshot snapshot) =>
+            new(snapshot.Identity, snapshot.IsDirectory, snapshot.IsDeletePending,
+                (snapshot.Attributes & WindowsFileIdentity.FileAttributeReparsePoint) != 0);
+    }
+
     internal static SafeFileHandle Open(string fullPath, IRelativePathNative native)
     {
         var root = Path.GetPathRoot(fullPath);
@@ -34,19 +42,19 @@ internal static class VerifiedPathWalker
 
             for (var index = 0; index < components.Length - 1; index++)
             {
-                var before = native.ReadSnapshot(current);
+                var before = DirectorySecuritySnapshot.From(native.ReadSnapshot(current));
                 var child = native.OpenRelativeDirectory(current, components[index]);
                 heldDirectories.Add(child);
-                var after = native.ReadSnapshot(current);
+                var after = DirectorySecuritySnapshot.From(native.ReadSnapshot(current));
                 if (before != after)
                     throw new IntakeTamperedException("An ancestor directory changed during secure path traversal.");
                 ValidateDirectory(child, native);
                 current = child;
             }
 
-            var parentBefore = native.ReadSnapshot(current);
+            var parentBefore = DirectorySecuritySnapshot.From(native.ReadSnapshot(current));
             final = native.OpenRelativeFile(current, components[^1]);
-            var parentAfter = native.ReadSnapshot(current);
+            var parentAfter = DirectorySecuritySnapshot.From(native.ReadSnapshot(current));
             if (parentBefore != parentAfter)
                 throw new IntakeTamperedException("The parent directory changed while the input was opened.");
             SafeFileIntake.EnsureLocalPath(native.GetFinalPath(final));
@@ -79,6 +87,9 @@ internal sealed class WindowsRelativePathNative : IRelativePathNative
     private const uint FileReadAttributes = 0x00000080;
     private const uint Synchronize = 0x00100000;
     private const uint FileShareRead = 0x00000001;
+    private const uint FileShareWrite = 0x00000002;
+    private const uint FileShareDelete = 0x00000004;
+    private const uint DirectoryShare = FileShareRead | FileShareWrite | FileShareDelete;
     private const uint OpenExisting = 3;
     private const uint NtFileOpen = 1;
     private const uint FileFlagBackupSemantics = 0x02000000;
@@ -90,7 +101,7 @@ internal sealed class WindowsRelativePathNative : IRelativePathNative
 
     public SafeFileHandle OpenRoot(string root)
     {
-        var handle = CreateFileW(root, FileReadAttributes | Synchronize, FileShareRead, IntPtr.Zero,
+        var handle = CreateFileW(root, FileReadAttributes | Synchronize, DirectoryShare, IntPtr.Zero,
             OpenExisting, FileFlagBackupSemantics | FileFlagOpenReparsePoint, IntPtr.Zero);
         if (handle.IsInvalid) ThrowOpenFailure("local drive root", Marshal.GetLastWin32Error());
         return handle;
@@ -98,16 +109,17 @@ internal sealed class WindowsRelativePathNative : IRelativePathNative
 
     public SafeFileHandle OpenRelativeDirectory(SafeFileHandle parent, string component) =>
         NtOpenRelative(parent, component, FileReadAttributes | Synchronize,
-            FileDirectoryFile | FileOpenReparsePoint);
+            DirectoryShare, FileDirectoryFile | FileOpenReparsePoint);
 
     public SafeFileHandle OpenRelativeFile(SafeFileHandle parent, string component) =>
-        NtOpenRelative(parent, component, GenericRead, FileNonDirectoryFile | FileOpenReparsePoint);
+        NtOpenRelative(parent, component, GenericRead, FileShareRead,
+            FileNonDirectoryFile | FileOpenReparsePoint);
 
     public FileSnapshot ReadSnapshot(SafeFileHandle handle) => WindowsFileIdentity.Read(handle);
     public string GetFinalPath(SafeFileHandle handle) => WindowsIntakeOperations.ReadFinalPath(handle);
 
     private static SafeFileHandle NtOpenRelative(
-        SafeFileHandle parent, string component, uint desiredAccess, uint createOptions)
+        SafeFileHandle parent, string component, uint desiredAccess, uint shareAccess, uint createOptions)
     {
         if (component is "." or ".." || component.Contains('\\') || component.Contains('/') ||
             component.Contains(':'))
@@ -140,7 +152,7 @@ internal sealed class WindowsRelativePathNative : IRelativePathNative
             // creates or modifies an object; FILE_OPEN_REPARSE_POINT prevents
             // traversal of the component itself.
             var status = NtCreateFile(out var handle, desiredAccess, ref attributes, out _,
-                IntPtr.Zero, 0, FileShareRead, NtFileOpen, createOptions, IntPtr.Zero, 0);
+                IntPtr.Zero, 0, shareAccess, NtFileOpen, createOptions, IntPtr.Zero, 0);
             if (status < 0 || handle.IsInvalid)
             {
                 handle?.Dispose();

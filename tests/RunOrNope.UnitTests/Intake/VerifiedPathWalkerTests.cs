@@ -24,6 +24,23 @@ public sealed class VerifiedPathWalkerTests
         Assert.Equal(0, native.FinalOpenCount);
     }
 
+    [Fact]
+    public void UnrelatedSiblingMetadataMutationDoesNotInvalidateHeldParent()
+    {
+        var native = new FakeRelativeNative { MutateRootOrdinaryMetadataAfterChildOpen = true };
+        using var result = VerifiedPathWalker.Open(@"C:\drop\sample.exe", native);
+        Assert.Equal(1, native.FinalOpenCount);
+    }
+
+    [Fact]
+    public void AncestorDeletePendingTransitionFailsClosed()
+    {
+        var native = new FakeRelativeNative { MarkRootDeletePendingAfterChildOpen = true };
+        Assert.Throws<IntakeTamperedException>(() =>
+            VerifiedPathWalker.Open(@"C:\drop\sample.exe", native));
+        Assert.Equal(0, native.FinalOpenCount);
+    }
+
     private sealed class FakeRelativeNative : IRelativePathNative
     {
         private readonly Dictionary<SafeFileHandle, FileSnapshot> _snapshots = [];
@@ -32,6 +49,8 @@ public sealed class VerifiedPathWalkerTests
         private int _nextHandle = 100;
         public bool MarkFirstChildReparse { get; init; }
         public bool SwapRootIdentityAfterChildOpen { get; init; }
+        public bool MutateRootOrdinaryMetadataAfterChildOpen { get; init; }
+        public bool MarkRootDeletePendingAfterChildOpen { get; init; }
         public int FinalOpenCount { get; private set; }
 
         public SafeFileHandle OpenRoot(string root)
@@ -57,8 +76,16 @@ public sealed class VerifiedPathWalkerTests
         public FileSnapshot ReadSnapshot(SafeFileHandle handle)
         {
             var snapshot = _snapshots[handle];
-            if (handle == _root && SwapRootIdentityAfterChildOpen && ++_rootReads >= 3)
-                return snapshot with { Identity = new FileIdentity(1, Guid.NewGuid()) };
+            if (handle == _root)
+            {
+                _rootReads++;
+                if (SwapRootIdentityAfterChildOpen && _rootReads >= 3)
+                    return snapshot with { Identity = new FileIdentity(1, Guid.NewGuid()) };
+                if (MarkRootDeletePendingAfterChildOpen && _rootReads >= 3)
+                    return snapshot with { IsDeletePending = true };
+                if (MutateRootOrdinaryMetadataAfterChildOpen && _rootReads >= 3)
+                    return snapshot with { Size = snapshot.Size + 4096, LastWriteTime = snapshot.LastWriteTime + 1 };
+            }
             return snapshot;
         }
 
