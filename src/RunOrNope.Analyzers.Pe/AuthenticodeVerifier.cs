@@ -93,7 +93,7 @@ public sealed class PlatformUnavailableTrustBackend : IAuthenticodeTrustBackend
 public sealed class WindowsAuthenticodeTrustBackend : IAuthenticodeTrustBackend
 {
     private const uint WtdUiNone = 2;
-    private const uint WtdRevokeNone = 0;
+    private const uint WtdRevokeWholeChain = 1;
     private const uint WtdChoiceFile = 1;
     private const uint WtdStateActionVerify = 1;
     private const uint WtdStateActionClose = 2;
@@ -153,7 +153,13 @@ public sealed class WindowsAuthenticodeTrustBackend : IAuthenticodeTrustBackend
     {
         StructSize = checked((uint)Marshal.SizeOf<WinTrustData>()),
         UiChoice = WtdUiNone,
-        RevocationChecks = WtdRevokeNone,
+        // Whole-chain revocation is requested so a revoked signer is rejected, but
+        // WtdCacheOnlyUrlRetrieval (below) forbids any network CRL/OCSP/AIA fetch:
+        // when revocation data is not cached, WinVerifyTrust returns
+        // CRYPT_E_REVOCATION_OFFLINE, which MapStatus reports as IndeterminateOffline
+        // (never Trusted). WtdRevokeNone would skip revocation entirely and let a
+        // revoked certificate read as Trusted.
+        RevocationChecks = WtdRevokeWholeChain,
         UnionChoice = WtdChoiceFile,
         FileInfo = fileInfo,
         StateAction = stateAction,
