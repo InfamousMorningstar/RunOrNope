@@ -3,7 +3,20 @@
 **Date:** July 24, 2026  
 **Status:** Approved conversational design, pending written-spec review  
 **Target:** Windows 10/11 x64  
-**Application:** Self-contained .NET 8 WPF desktop application
+**Application:** Self-contained .NET 10 WPF desktop application
+
+The supported-OS matrix names exact Windows editions/builds and servicing states;
+“Windows 10/11” alone is not a release claim. Unsupported/end-of-servicing hosts
+may run the application only as explicitly unverified configurations. The release
+matrix must include AppContainer, Job Object, mitigation, WinTrust, MSI read-only,
+long-path, and enterprise-policy variants.
+
+.NET 10 is the active LTS release and is supported through November 14, 2028.
+RunOrNope must track the current serviced .NET 10 patch and migrate to a supported
+LTS before that date. A self-contained deployment does not extend Microsoft
+runtime support. The release checklist verifies the target and current patch
+against Microsoft's published support policy:
+https://dotnet.microsoft.com/en-us/platform/support/policy/dotnet-core
 
 ## 1. Purpose
 
@@ -17,11 +30,20 @@ Version 1 supports:
 
 - Windows PE files: `.exe`, `.dll`, `.scr`, and `.sys`
 - Windows Installer databases: `.msi`
-- Nested artifacts discovered inside supported inputs, including PE files, CLR assemblies, NSIS payloads, Inno Setup payloads, CAB files, Electron ASAR archives, Java JAR/class files, ZIP-compatible containers, scripts, and high-value configuration files
+- Bounded nested artifacts discovered inside supported inputs:
+  - Full v1 analysis: PE/CLR, MSI tables and embedded streams, CAB, ZIP/JAR/class, Electron ASAR, text scripts, and selected high-value configuration files
+  - Best-effort v1 extraction adapters: recognized NSIS and Inno Setup versions
+  - Identification only unless separately listed above: unknown installer/container versions and other embedded formats
 
 Detection uses file structure and magic bytes rather than filename extensions. Archives supplied directly by the user are outside the version 1 scope. Archives found inside a supported PE or MSI are analyzed as nested artifacts.
 
-Unsupported formats receive an explicit **Unsupported or invalid format** outcome. Unsupported versions of otherwise recognized packaging receive **Analysis incomplete**, not a favorable verdict.
+Unsupported root formats receive **Unsupported or invalid root format** analysis
+status and no risk disposition. Unsupported versions of otherwise recognized
+nested packaging receive **Incomplete** status, not a favorable verdict.
+
+“Supports” means that the implementation has a versioned parser, explicit resource
+limits, adversarial tests, and completeness semantics for that format. Merely
+recognizing a magic value or extracting some strings does not qualify as support.
 
 ## 3. Non-Negotiable Safety Boundary
 
@@ -37,22 +59,61 @@ It must never:
 - Use Explorer shell extensions, icon handlers, property handlers, or preview handlers on the sample
 - Resolve sample URLs, contact sample domains, or submit sample content
 - Upload a submitted file to VirusTotal or any other service
+- Send sample hashes, filenames, paths, extracted strings, findings, reports, or
+  diagnostics through telemetry, crash reporting, update checks, analytics, or
+  dependency features without the separately specified explicit action
 - Interpret a parser failure as evidence that a capability is absent
 
-Static parsing occurs in a disposable restricted worker, not in the WPF process.
+Version 1 has no automatic telemetry, crash upload, analytics, remote rule fetch,
+or background update check. The only permitted network operations are the
+separately confirmed hash-only VirusTotal lookup and separately confirmed online
+signer-trust refresh. Each is implemented outside the worker through a
+destination-allowlisted client with redirects disabled, bounded requests and
+responses, certificate validation, timeout/cancellation, and an audit entry.
+
+Worker processes suppress interactive crash UI and application-controlled crash
+submission. Release testing examines Windows Error Reporting and enterprise dump
+policy behavior. The UI claim is limited to what RunOrNope sends; it does not claim
+to control OS-, hypervisor-, backup-, synchronization-, or enterprise-managed
+telemetry outside the application.
+
+Static parsing occurs in a fresh, disposable AppContainer worker, not in the WPF
+process. A restricted token and Job Object alone are not accepted as a security
+boundary because neither independently removes network access or contains a
+memory-corruption exploit.
 
 Each worker receives:
 
 - A read-only input handle
-- A fresh private extraction directory
-- No network capability
+- A fresh private extraction directory ACLed only to the broker and that worker's unique AppContainer SID
+- An AppContainer token with no network, enterprise-authentication, private-network, broad-file, or device capabilities
 - No write access to the sample directory
 - No inherited handles except required input/output/IPC handles
 - A Windows Job Object with kill-on-close, CPU and memory limits, process-count limits, and output quotas
-- Child-process creation blocked for managed parser jobs
+- `ActiveProcessLimit = 1`; worker child-process creation is prohibited
+- Process mitigations selected and regression-tested per adapter, including DEP,
+  ASLR, CFG where compatible, extension-point disablement, image-load restrictions,
+  and prohibition of dynamic code where the parser does not require it
 - A strict wall-clock timeout and cancellation path
 
-Approved passive native extractors may run only as the isolated worker or as the worker's sole explicitly permitted child. They never run under the full-trust WPF process.
+The broker launches each approved passive native extractor as its own
+single-purpose AppContainer worker under a separate Job Object. A parser worker
+never launches an extractor or any other child. Adapter executables are selected
+from an immutable application manifest and verified against packaged hashes before
+launch; a sample-controlled path, filename, environment variable, or configuration
+value can never select an executable.
+
+The broker creates the AppContainer profile and ACLs before opening hostile input.
+It runs unelevated and refuses analysis if the requested isolation token, capability
+set, Job assignment, mitigations, private directory, or handle allowlist cannot be
+verified. There is no automatic fallback to an ordinary process. Windows editions
+or enterprise policies that prevent the required isolation receive an explicit
+**Analysis unavailable: isolation could not be established** result.
+
+The no-network claim is verified both structurally (no AppContainer network
+capabilities) and by release tests under IPv4, IPv6, loopback, DNS, proxy, and
+private-network scenarios. Job Objects remain resource-governance and lifecycle
+controls, not the claimed network sandbox.
 
 Extracted artifacts use generated content-addressed names. Sample-controlled names remain metadata and are never used directly as filesystem paths.
 
@@ -66,15 +127,29 @@ The UI accepts a file, starts or cancels analysis, renders progress and findings
 
 ### 4.2 Analysis Broker
 
-The broker creates an immutable request, opens the input read-only, launches a disposable restricted worker, enforces the Job Object and timeout policy, receives a bounded result DTO, validates it, and disposes of worker artifacts.
+The broker creates an immutable request, opens the input once with write/delete
+sharing denied, records file identity and size, hashes and reads through that same
+handle, launches a disposable AppContainer worker, enforces the Job Object and
+timeout policy, receives a bounded result DTO, validates it as hostile input, and
+disposes of worker artifacts. A path is never reopened after validation. If the
+file identity, size, or last-write metadata changes during acquisition, analysis
+stops with an incomplete/tampered-input result.
 
 ### 4.3 Restricted Analysis Worker
 
-The worker performs format detection, hashing, bounded parsing, recursive artifact discovery, capability analysis, and rule evaluation. A crash, timeout, limit violation, or parser rejection becomes structured incompleteness evidence.
+The worker performs format detection, hashing, bounded parsing, recursive artifact
+discovery, capability analysis, and rule evaluation. A crash, timeout, limit
+violation, or parser rejection becomes structured incompleteness evidence. Worker
+stdout, stderr, exception text, parser diagnostics, and DTO strings are
+sample-influenced and receive the same length, encoding, and rendering controls as
+sample content.
 
 ### 4.4 Evidence and Verdict Engine
 
-The engine converts observations into transparent capability findings, tracks completeness and confidence independently from severity, caps correlated evidence families, and produces one cautious top-level outcome.
+The engine converts observations into transparent capability findings, tracks
+completeness and confidence independently from severity, caps correlated evidence
+families, and produces a cautious risk disposition plus an independent analysis
+status.
 
 ### 4.5 Report Engine
 
@@ -108,21 +183,39 @@ Every artifact records:
 
 Artifacts are deduplicated by SHA-256 before recursion.
 
-Default policy limits:
+Default Deep Scan policy limits:
 
 - Maximum recursion depth: 5
-- Maximum children per artifact: 10,000
-- Maximum total artifacts: 25,000
-- Maximum single materialized child: 2 GiB
-- Maximum total extracted bytes: the lower of 10 GiB or 20 times the input size
-- Maximum expansion ratio per member: 1,000 times
-- Maximum aggregate expansion ratio: 200 times
+- Maximum children per artifact: 1,000
+- Maximum total artifacts: 5,000
+- Maximum single materialized child: 256 MiB
+- Maximum total materialized bytes: the lower of 2 GiB or 10 times the input size
+- Maximum expansion ratio per member: 200 times
+- Maximum aggregate expansion ratio: 50 times
 - Adapter timeouts: 30 to 120 seconds, selected by format
-- Adapter memory limits: 512 MiB to 2 GiB, selected by format
+- Adapter memory limits: 256 MiB to 1 GiB, selected by format
 
-Limits are configurable in advanced settings. Hitting a limit records `TruncatedByPolicy` and forces an incomplete-analysis disclosure.
+These are user-reducible defaults, not user-expandable security ceilings. A
+separately versioned hard-ceiling policy bounds recursion, artifacts, bytes,
+memory, CPU, wall time, path/string lengths, table rows, findings, IPC payloads,
+and report size. The broker checks free disk space before and during extraction,
+uses quotas rather than trusting archive metadata, and cancels before reserve
+space is exhausted. Hitting any completeness-affecting limit records
+`TruncatedByPolicy` on the affected artifact and forces an incomplete-analysis
+disclosure.
 
 Extraction rejects absolute, drive, UNC, device, traversal, alternate-data-stream, reserved-device, case-collision, trailing-dot, and trailing-space paths. It does not follow symlinks, hard links, mount points, junctions, or other reparse points.
+
+Archive/container adapters parse member metadata first and stream bounded content
+where possible. They never preallocate from sample-declared sizes. Every output
+file is created beneath the already-open private directory using generated names,
+with reparse-point checks on every directory handle. Temporary files are opened
+delete-on-close where compatible and are removed by the broker after worker
+termination. Cleanup failure is reported and retried on next launch.
+
+Deduplication prevents repeated analysis but does not bypass accounting: every
+logical member, compressed byte, expanded byte, edge, and parser attempt counts
+toward its applicable quota even when its content hash was seen earlier.
 
 ## 6. Analysis Pipeline
 
@@ -130,18 +223,38 @@ Extraction rejects absolute, drive, UNC, device, traversal, alternate-data-strea
 
 RunOrNope records:
 
-- SHA-256, SHA-1, and MD5 for interoperability, with SHA-256 as the identity key
+- SHA-256 as the identity key; optional SHA-1 and MD5 are labeled legacy
+  interoperability values and are never used for trust, deduplication, or verdicts
 - Actual format and architecture
 - File size and timestamps, clearly labeled as untrusted metadata
 - Version-resource claims
 - Manifest and requested execution level
 - Authenticode certificate-table structure
-- Windows trust verification result
+- Windows trust verification result and exact policy/error code
 - Embedded versus catalog signature
-- Digest validity, chain state, signer, issuer, thumbprints, timestamp, revocation result, and trust-policy error
-- Whether certificate validation used only local/cache data or performed an explicitly disclosed network operation
+- Every discovered signature, digest validity, chain state, signer, issuer,
+  thumbprints, RFC 3161 or legacy countersignature timestamp state, and revocation
+  result
+- Verification mode, verification time, Windows trust-policy configuration, root
+  store context, catalog source, and whether only local/cache data was used
 
 Signature presence is not signature validity. A valid signature is identity and integrity evidence, not proof of benign behavior. Unsigned software is not automatically suspicious.
+
+Default local analysis performs cache-only, noninteractive trust verification and
+must not trigger automatic root, AIA, CRL, OCSP, timestamp, catalog, or reputation
+retrieval. An unavailable revocation or chain result is **Indeterminate/offline**,
+not valid or invalid. A separately confirmed **Refresh signer trust online** action
+may perform certificate-network retrieval; it discloses that no sample bytes or
+sample URLs are sent, records the network mode, and remains separate from static
+behavior evidence.
+
+The implementation uses Windows trust APIs for the platform trust verdict rather
+than inferring validity from certificate extraction. It enumerates multiple
+signatures, distinguishes embedded and catalog trust, closes provider state, and
+tests strict Authenticode padding behavior. Catalog trust is machine/store
+context-dependent and is reported as such; it is not a portable property of the
+file alone. A historical timestamp may preserve signing-time validity while
+current revocation or policy state remains separately reported.
 
 ### 6.2 PE Analysis
 
@@ -202,7 +315,13 @@ Reflection, delegates, dynamic methods, expression trees, unmanaged transitions,
 
 ### 6.4 MSI Analysis
 
-MSI packages are opened only through the Windows Installer database API using `MSIDBOPEN_READONLY`.
+MSI packages are opened only inside the AppContainer MSI worker through the Windows
+Installer database API using `MSIDBOPEN_READONLY`. No install session is created,
+no product state is queried as evidence of package behavior, and no API that
+applies transforms, patches, advertisements, repairs, or installations is called.
+If read-only MSI database access cannot operate under the required isolation on a
+supported Windows configuration, MSI analysis fails closed; the broker does not
+retry outside AppContainer.
 
 RunOrNope inventories:
 
@@ -215,22 +334,50 @@ RunOrNope inventories:
 - `Registry`, `RemoveRegistry`, `ServiceInstall`, and `ServiceControl`
 - `Environment`, `Shortcut`, `IniFile`, and `RemoveFile`
 - `AppSearch`, locator, signature, condition, transform, and external-source information
+- Package signature state separately from `MsiDigitalSignature`/
+  `MsiDigitalCertificate` coverage of external media
 
 Custom-action type bits are decoded into action kind, source, target, timing, rollback/commit/deferred state, impersonation context, potential elevation, sequence, and condition. A custom action is legitimate MSI functionality and is not inherently malicious.
 
 Embedded streams and cabinets become child artifacts and are recursively analyzed. Missing external cabinets, transforms, patches, or sources force an incomplete result. MSI installation, package sessions, UI preview, repair, patching, and custom-action invocation are prohibited.
 
+Conditions and formatted properties are reported as static expressions unless they
+can be resolved solely from immutable package data. RunOrNope does not pretend to
+evaluate machine-, user-, feature-selection-, policy-, or install-state-dependent
+branches. Deferred/no-impersonate custom actions are reported as potential
+elevated execution only when sequencing and package context support that
+interpretation.
+
+The outer MSI signature does not by itself establish coverage of external
+cabinets, transforms, downloaded sources, or later patches. Coverage is presented
+per object. Missing referenced media prevents a complete payload verdict even
+when the database signature is valid.
+
 ### 6.5 Installer and Container Analysis
 
 Installer recognition combines multiple structural signals and preserves every detected layer.
 
-- NSIS and recognized archive payloads use a pinned current 7-Zip unpack-only backend in an isolated worker.
-- Inno Setup uses a pinned `innoextract` backend when the format version is supported. Newer unsupported versions are reported as unparsed.
+- Recognized NSIS archive payloads may use a specifically versioned, packaged,
+  hash-verified 7-Zip backend in its own AppContainer worker. “Current” is not a
+  version requirement; adapter version, supported format range, license, upstream
+  provenance, and security-review date are release metadata.
+- Inno Setup may use a specifically versioned, packaged, hash-verified
+  `innoextract` backend under the same rules when the format version is explicitly
+  supported. Newer, ambiguous, or rejected versions are reported as unparsed.
 - Electron ASAR uses a custom bounded managed reader based on the documented format. It caps header size, JSON depth, entry count, offsets, lengths, and logical path lengths.
-- CAB extraction uses a bounded maintained parser or the passive Windows Cabinet API.
+- CAB extraction uses one selected, documented, bounded implementation in its own
+  worker. The implementation choice cannot remain “parser or API” at release
+  because its security properties and test oracle must be known.
 - Java JARs use bounded ZIP parsing with traversal, entry, depth, size, and ratio protections.
 
 The application never invokes installer switches, including switches advertised as extraction or help modes, because installer initialization may still execute code.
+
+Adapters receive only generated paths/handles and fixed arguments from the broker.
+No sample-controlled switch, response file, environment variable, working
+directory, DLL search path, plugin path, locale path, or output path reaches an
+adapter command line. Adapter output is not trusted merely because the process
+exited successfully; the broker independently validates every returned path,
+size, count, and content hash.
 
 ### 6.6 Electron and Java Analysis
 
@@ -249,11 +396,30 @@ High-value Electron inspection includes:
 
 Java/JAR inspection parses without class loading:
 
-- Manifest, main class, class path, multi-release entries, modules, service providers, and signature coverage
+- Manifest, main class, class path, multi-release entries, modules, service
+  providers, and per-entry JAR signature/digest coverage
 - Constant pools, class hierarchy, methods, descriptors, annotations, bootstrap methods, invokedynamic, method handles, strings, code references, and exception tables
 - Native/JNA loading, process spawning, networking, filesystem traversal, archives, browser/Discord paths, DPAPI/NSS access, database access, webcam/screen APIs, and WebSockets
 
 Application classes are separated from bundled dependencies using package clustering, Maven metadata, known hashes, manifests, call direction, and shaded-library signatures. Library capability alone cannot become confirmed application behavior.
+
+JAR signing is reported as integrity/identity evidence with explicit unsigned,
+partially signed, mixed-signer, invalid-digest, and unsupported-algorithm states.
+The presence of `META-INF` signature files is not treated as successful
+verification. Multi-release entries are analyzed under their applicable Java
+version and cannot silently replace a base-class finding.
+
+Surviving method names, strings, imports, constant-pool entries, and YARA matches
+are observations, not confirmed behavior. **Confirmed static implementation**
+requires a parsed implementation body or equivalent data flow that performs the
+operation in application-linked code. An unresolved `invokedynamic`, reflection,
+native transition, dynamic import, or encrypted dispatcher lowers reachability or
+linkage confidence rather than being guessed.
+
+Electron fuse and ASAR-integrity observations are version-sensitive. If the
+Electron version or fuse layout cannot be reliably identified, the state is
+**Unknown**, not disabled. A declared ASAR integrity hash is verified against the
+corresponding bytes before it is reported as valid.
 
 ### 6.7 Strings and Configuration
 
@@ -283,7 +449,18 @@ Every match records:
 - Rule provenance and license
 - Timeout or truncation state
 
-YARA-X runs in the restricted worker with time and input limits. Rules are compiled and validated before release. A YARA match is labeled a rule detection, not proof of a malware family, capability execution, or incident outcome.
+YARA-X runs in the AppContainer worker with time and input limits. Rules are compiled and validated before release. A YARA match is labeled a rule detection, not proof of a malware family, capability execution, or incident outcome.
+
+Release rule packs are immutable, signed/versioned application inputs. They cannot
+use remote includes, arbitrary user paths, or unreviewed modules. Rule compilation,
+module parsing, and matching all occur in the AppContainer worker. A rule timeout,
+engine error, unsupported module, or skipped artifact is completeness evidence.
+Community rule names and metadata are untrusted display text and do not determine
+severity. License and provenance are enforced in CI.
+
+User-supplied rules are a post-v1 feature. If later added, they require a distinct
+trust model, stricter quotas, an explicit namespace, and results visually separated
+from the curated release rules.
 
 ### 6.9 Optional VirusTotal Lookup
 
@@ -292,12 +469,21 @@ Local analysis performs no network access.
 The separate **Look up this SHA-256 on VirusTotal** action:
 
 - Requires explicit user activation and confirmation
-- Displays the exact hash and endpoint before sending
+- Displays the exact hash, endpoint, recipient, and privacy consequence before
+  sending: a hash can identify a unique/private file and the lookup discloses
+  interest in or possession of that hash to the service
 - Sends only the SHA-256
 - Never uploads file bytes
 - Stores an API key only through an appropriate local secret mechanism
 - Keeps reputation results separate from local static evidence
-- Records lookup time and response provenance
+- Records lookup time, response provenance, API/error state, and cache age
+- Never retries, follows a service-provided URL, or submits another artifact
+  without a new bounded request under the documented API contract
+
+The UI must not imply that “hash only” is anonymous. A missing hash report is
+**Unknown**, not evidence of benignness. Vendor counts are displayed with scan
+time and denominator and cannot independently produce a `High-risk` or favorable
+local verdict.
 
 ## 7. Evidence Model
 
@@ -358,17 +544,36 @@ Every capability card provides:
 - Limitations
 - Recommended action
 
+Recommended actions come from a small reviewed taxonomy and never promise that a
+control makes a file safe. **High-risk static indicators** recommends not running
+the file and verifying provenance or escalating to a qualified reviewer.
+**Caution warranted** recommends obtaining the software from an authoritative
+source, verifying publisher/hash through an independent channel, and scanning with
+current endpoint protection. A favorable result still carries the mandatory
+non-guarantee wording. RunOrNope v1 does not delete, quarantine, move, rename,
+unblock, strip Mark-of-the-Web, change ACLs, or offer a **Run anyway** action.
+
 Technical users can expand cards to view imports, methods, strings, MSI rows, rule matches, byte offsets, call relationships, and artifact hashes.
 
 ## 9. Verdict Model
 
-Top-level outcomes are:
+Risk dispositions are:
 
 - **High-risk static indicators**
 - **Caution warranted**
 - **Few material static concerns identified**
-- **Analysis incomplete**
-- **Unsupported or invalid format**
+
+Analysis status is independent and always displayed:
+
+- **Complete within the declared v1 policy**
+- **Incomplete**
+- **Unsupported or invalid root format**
+- **Analysis unavailable: isolation could not be established**
+
+A file can simultaneously have **High-risk static indicators** and **Incomplete**
+analysis. Incompleteness never lowers a risk disposition, suppresses already
+established findings, or becomes a favorable result. An unsupported/unavailable
+root receives no risk disposition.
 
 The verdict engine tracks three dimensions independently:
 
@@ -382,7 +587,22 @@ Weak context such as unsigned status, entropy, timestamp anomalies, uncommon sec
 
 Positive evidence such as a trusted signature may reduce identity uncertainty but cannot erase behavioral findings.
 
-Every report exposes verdict contributions, countervailing facts, rule/scoring versions, and completeness state. There are no safety guarantees or malware probability percentages.
+Every report exposes verdict contributions, correlated-family caps,
+countervailing facts, rule/scoring versions, threshold version, and completeness
+state. There are no safety guarantees or malware probability percentages.
+
+The scoring engine uses integer/rational versioned weights, deterministic ordering,
+and documented saturation rules. Negative or “benign” evidence can reduce only the
+specific uncertainty it addresses; it cannot subtract from an unrelated behavioral
+finding. Parser errors, unavailable dependencies, missing MSI media, encrypted
+dispatch, and unsupported nested formats contribute no negative points.
+
+Before v1 release, thresholds are frozen against a held-out corpus and an explicit
+false-positive budget. Any later rule, weight, parser, trust-policy, or threshold
+change increments a scoring/rules version and produces a before/after regression
+report. A YARA family name, signer reputation, filename, extension, entropy,
+timestamp, or single capability string cannot alone trigger **High-risk static
+indicators**.
 
 Required favorable-result wording:
 
@@ -422,9 +642,11 @@ Deep Scan adds:
 
 The interface prominently displays:
 
-- **Sample never executed**
-- **Sample never uploaded**
+- **RunOrNope did not invoke or install the sample**
+- **RunOrNope did not upload file bytes**
+- Worker isolation status and any isolation/policy failure
 - Whether any optional network action occurred
+- Whether a hash or certificate identifier was disclosed by an optional network action
 - SHA-256
 - Analysis completeness
 - Signer status
@@ -434,7 +656,20 @@ The interface prominently displays:
 
 ## 11. Reports
 
-HTML reports are portable, self-contained, escaped against sample-controlled markup, and interactive without external resources. They mirror the UI's summary and expandable evidence.
+HTML reports are portable, self-contained, and use native HTML disclosure elements
+for interaction; v1 reports contain no JavaScript. They include a restrictive
+Content Security Policy (`default-src 'none'`, with only the exact required local
+style policy), no remote fonts/images/styles, no forms, no active content, no
+automatic refresh, and no clickable sample-derived URI. They mirror the UI's
+summary and expandable evidence.
+
+All report values are constructed through typed encoders; sample-derived strings
+are never concatenated into markup, attributes, CSS, filenames, paths, log
+templates, or JSON fragments. Control characters, bidirectional controls,
+unpaired surrogates, confusable path separators, and overlong values are escaped
+or visibly annotated while preserving a bounded byte/Unicode representation for
+technical review. Formula-prefix defenses are applied if CSV or spreadsheet export
+is ever added.
 
 JSON reports use a versioned schema and include:
 
@@ -448,7 +683,25 @@ JSON reports use a versioned schema and include:
 - Verdict contributions
 - Optional VirusTotal hash-lookup metadata
 
-Reports never embed the submitted executable or extracted executable bytes.
+Reports never embed a complete submitted executable, complete extracted payload,
+or reconstructable binary. Bounded byte/string excerpts may appear only when
+needed as evidence, are size-limited and escaped, and are covered by the report
+privacy warning and disclosure mode.
+
+Reports are themselves potentially sensitive. By default they omit the source
+directory, username-bearing absolute paths, API keys, authorization headers,
+cookies, tokens, private keys, full document contents, and unbounded strings.
+Secret-like values are redacted with type, length, and a nonreversible report-local
+identifier. The user may explicitly opt into a **Full technical evidence** report
+after a warning; this never changes the prohibition on complete or reconstructable
+payloads, and the report records the disclosure mode.
+
+Export uses a user-selected destination, a fixed safe extension, a
+RunOrNope-generated filename, and create-new/explicit-overwrite semantics. A
+sample-controlled product name or original filename is display metadata only.
+Reports state that opening or sharing them may disclose filenames, infrastructure,
+signers, and security findings. Diagnostic logs follow the same redaction and
+length policy and never contain sample bytes by default.
 
 ## 12. Testing Strategy
 
@@ -482,6 +735,18 @@ The corpus contains:
 
 Property-based and coverage-guided fuzz tests target PE, CLR metadata, OLE/CFBF, MSI, CAB, ASAR, resource, certificate, and archive parsers.
 
+Fuzzing covers both in-process parser libraries and the production AppContainer
+adapter boundary. Seed corpora include valid minimal structures, boundary cases,
+and synthetic malformed files; no private malware is uploaded to hosted fuzzing.
+Every discovered crash/hang receives a minimized non-sensitive reproducer where
+licensing and safety permit. Parser/adapter upgrades replay the complete regression
+corpus before merge.
+
+The broker's hostile-result boundary is fuzzed independently: malformed lengths,
+duplicate IDs, invalid graph edges, excessive nesting, invalid Unicode, control
+characters, HTML/JSON payloads, huge diagnostics, and inconsistent completeness
+claims must be rejected without affecting the UI process.
+
 ### 12.3 Verdict and False-Positive Testing
 
 Distinct benign and suspicious/malicious evaluation sets are stratified by:
@@ -507,17 +772,47 @@ Measurements include:
 
 Every high-risk false positive requires review before release.
 
+Evaluation labels record their provenance and uncertainty. “Malicious” corpora
+must not rely solely on antivirus consensus, and “benign” corpora must not rely
+solely on a valid signature. Threshold selection uses a development set; final
+metrics use a held-out set that cannot be used to tune rules. Results publish
+sample counts and confidence intervals, not only aggregate percentages.
+
+Required benign challenge sets include unsigned utilities, administrative and
+remote-management tools, debuggers, accessibility software, game launchers/mods,
+packers/protectors, installers with legitimate elevated custom actions,
+self-contained .NET applications, Electron applications, and enterprise software.
+
 ### 12.4 No-Execution and Privacy Tests
 
-Tests prove:
+Tests verify the following requirements through complementary controls and
+observations:
 
-- Samples and embedded artifacts are never executed or loaded
+- Samples and embedded artifacts are never invoked as code, mapped as executable
+  images, installed, or loaded through managed/native module-loading APIs
 - No installer, repair, registration, custom action, preview, script, Java, Node, Electron, or shell path is invoked
 - Managed worker child-process creation is blocked
 - Local scans create no DNS requests, outbound connections, or uploads
 - VirusTotal sends only the explicitly confirmed SHA-256
 - Extracted bytes remain within the worker's private directory
 - Worker limits, restricted identity, cancellation, and kill-on-close function correctly
+- A hostile worker cannot reach loopback, LAN, DNS, IPv4/IPv6 Internet, configured
+  proxies, named pipes outside the allowlist, user profile data, registry secrets,
+  devices, clipboard, window station/UI, or broker handles outside the allowlist
+- Each native adapter is limited to one process and cannot influence executable,
+  DLL/plugin, configuration, locale, or output-path selection with sample data
+- Report generation neutralizes markup, URI, CSS, bidirectional-text, control
+  character, oversized-value, and JSON injection cases and applies default
+  redaction
+- The release package contains no test malware, extracted payload, API key,
+  developer path, private report, or unapproved rule
+
+No single test “proves” the absence of execution or network behavior. Release
+evidence combines process/thread/image-load telemetry, child-process denial,
+AppContainer capability inspection, filesystem/registry monitoring, packet and
+DNS capture, loopback/private-network listeners, canary executables and DLLs, and
+negative tests that deliberately attempt each prohibited operation. Tests run on
+every supported Windows build class, not only a developer workstation.
 
 ### 12.5 Slyden Local Regression
 
@@ -533,6 +828,12 @@ The test:
 - Fails if the sample changes, launches, loads, escapes the worker, or is copied into repository/build output
 - Does not place the malware, its bytes, or private derived payloads in Git, GitHub Actions, packages, logs, or public fixtures
 
+This private sample is not a release gate on machines where it is absent and is
+not used to tune a special-case verdict. Public CI uses synthetic fixtures that
+exercise the same parser/evidence paths without reproducing private malicious
+content. The local harness records only approved hashes and redacted assertions,
+requires an explicit opt-in environment flag, and refuses to fetch the sample.
+
 ### 12.6 Release Gates
 
 A release requires:
@@ -544,9 +845,23 @@ A release requires:
 - Signed release artifacts
 - Dependency-license inventory and SBOM
 - Repeatable builds where practical
+- A clean-room rebuild comparison or documented explanation of every
+  nondeterministic output
+- Source revision, toolchain, SDK/runtime, adapter, rules, and dependency digests
+  embedded in release provenance
 - Clean-machine portable-package validation
 - Keyboard navigation, accessibility, DPI, cancellation, and large-result UI validation
 - Independent review of scoring-threshold changes
+- Verification that all workers fail closed when AppContainer creation,
+  mitigations, Job assignment, ACLs, or handle restrictions are denied
+- Verification that the supported Windows build/edition matrix is still serviced
+  and that the bundled .NET runtime remains supported
+- Signing-key custody, rotation, revocation, and incident-recovery procedure tested
+
+“Zero known parser crashes” means zero reproducible, untriaged crashes in supported
+code paths. It does not mean the parsers are vulnerability-free. Every parser
+crash, hang, memory-limit kill, malformed DTO, and sandbox-policy failure is a
+security defect until triaged and a completeness event for the affected scan.
 
 ## 13. GitHub Repository
 
@@ -565,6 +880,36 @@ The repository includes:
 - Explicit warning not to acquire malware merely to test RunOrNope
 
 The Slyden sample and private extracted artifacts are excluded from Git and all release workflows.
+
+Repository and release controls include:
+
+- Protected default and release branches, required review and status checks, no
+  force pushes, and two-person approval for release/signing workflow changes
+- Least-privilege GitHub Actions permissions declared per job
+- Third-party actions pinned by immutable commit SHA and reviewed before updates
+- No untrusted pull-request code executed in a context that has release secrets,
+  signing keys, writable package permissions, or persistent self-hosted runners
+- Ephemeral hosted runners for untrusted contributions; release jobs consume only
+  reviewed source and reproducibly identified build inputs
+- Secret scanning, dependency review, code scanning, provenance/attestation, and
+  artifact-digest verification
+- Release creation only from a protected, annotated tag whose commit passed the
+  release gates
+- Published checksums, SBOM, provenance, signing certificate/key identifier, and
+  verification instructions next to every artifact
+- A security advisory and revocation process for compromised releases, parser
+  vulnerabilities, malicious rule updates, and signing-key compromise
+
+Version 1 has no in-application auto-updater. Users obtain updates through the
+documented release channel and verify the signed release and digest. This avoids
+introducing a privileged network/update execution path before a separately
+threat-modeled update design exists.
+
+Any future updater must use a signed, versioned update manifest anchored in keys
+shipped with the application; HTTPS alone is insufficient. It must resist rollback,
+freeze, mix-and-match, and mirror compromise; verify manifest and artifact before
+execution; support signing-key rotation/revocation; never accept a package selected
+by sample content; and require its own architecture and penetration review.
 
 ## 14. Version 1 Non-Goals
 
@@ -596,3 +941,32 @@ The design is grounded in:
 - NIST Secure Software Development Framework guidance
 
 Dependency versions, licenses, release provenance, and maintenance status must be revalidated during implementation and before each release.
+
+## 16. Residual Risks and Trust Assumptions
+
+The design reduces risk; it cannot make hostile parsing risk-free. Public
+documentation and the threat model explicitly retain these residual risks:
+
+- A parser, native adapter, .NET runtime, Windows API, AppContainer, broker, or
+  kernel vulnerability may permit code execution or sandbox escape.
+- AppContainer containment depends on the supported Windows build, configured
+  mitigations, ACL correctness, handle discipline, and absence of dangerous broker
+  services or enterprise policy exceptions.
+- Static analysis cannot reliably resolve every packed, encrypted, reflective,
+  downloaded, environment-dependent, native, or deliberately obfuscated behavior.
+- A valid platform trust result depends on verification time, machine trust stores,
+  policy, revocation availability, and catalog context and may change later.
+- Resource ceilings allow denial of analysis by forcing an incomplete result; they
+  intentionally prefer availability loss over unsafe extraction.
+- Pinned third-party parsers, YARA-X, rules, GitHub Actions, the build toolchain,
+  signing infrastructure, and dependencies remain supply-chain trust anchors.
+- Full-evidence reports may contain sensitive indicators or bounded hostile text
+  despite encoding and redaction controls.
+- RunOrNope cannot control operating-system, endpoint-security, backup,
+  synchronization, hypervisor, or enterprise telemetry outside its own processes.
+- A user can disregard the recommendation, obtain a different file after scanning,
+  or run a modified/time-dependent/downloader sample whose behavior was absent from
+  the scanned bytes.
+
+These are disclosed as limitations, not converted into low-confidence findings or
+hidden behind a favorable verdict.
