@@ -40,8 +40,11 @@ is named and SHA-256 hashed in a canonical P-256 ECDSA-signed manifest. Strict
 Windows filename checks reject device names, invalid/trailing characters,
 case collisions, and non-ASCII normalization ambiguity. Files are staged from
 held read-only source handles into a unique worker-readable package directory,
-flushed, hashed again, sealed read/execute-only, and held against write/delete
-replacement through worker termination. The broker also verifies the suspended
+flushed, hashed again, sealed read/execute-only, and transitioned between
+continuous no-delete handles before a final hash establishes the long-lived
+deny-write/delete launch lock. Any same-user write during that transition is
+detected before launch, and the final handles remain held through worker
+termination. The broker also verifies the suspended
 process image is the exact staged entrypoint. Callers must supply the trusted public key from
 their application trust root; trusting a key stored beside the package would
 defeat the signature.
@@ -52,10 +55,13 @@ LAN, HTTP, explicit proxy, WebSocket, DNS packet delivery, child-process creatio
 unexpected inherited handles. It also verifies safe output writes, traversal
 and reparse denial, memory/CPU/wall-clock limits, and Job kill-on-close. On this
 Windows build, Winsock accepts the isolated raw UDP DNS send locally but the
-controlled listener receives zero bytes; the test measures observed egress
-instead of mislabeling a resolver error as network denial. Worker termination
-is awaited before cleanup, and startup scavenging only removes strictly named,
-ACL-private RunOrNope resources older than 24 hours.
+controlled listener receives zero bytes; the test measures observed egress over
+a bounded post-result receive window instead of mislabeling a resolver error as
+network denial. Worker termination is awaited before cleanup. Automatic
+crash-leftover scavenging and profile deletion are intentionally disabled:
+names, timestamps, DACLs, and marker files are forgeable by the broker user and
+cannot safely authorize recursive deletion. Normal in-process cleanup remains
+active; crash leftovers require deliberate manual inspection and removal.
 
 ## Planned supported root formats
 

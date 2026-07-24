@@ -21,7 +21,7 @@ public sealed class WorkerBroker : IWorkerBroker
     private readonly string? _packageSourceRoot;
     private readonly WorkerPackageManifest? _packageManifest;
     private readonly Action<string>? _prepareOutputForTesting;
-    private readonly Action<string>? _attemptPackageReplacementForTesting;
+    private readonly Action<string>? _attemptPackageReplacementDuringSealForTesting;
     private readonly WorkerIsolationPolicy _policy;
 
     public WorkerBroker() : this(
@@ -32,7 +32,7 @@ public sealed class WorkerBroker : IWorkerBroker
     private WorkerBroker(
         string packageSourceRoot, WorkerPackageManifest? packageManifest,
         WorkerIsolationPolicy policy, bool trusted, Action<string>? prepareOutputForTesting = null,
-        Action<string>? attemptPackageReplacementForTesting = null)
+        Action<string>? attemptPackageReplacementDuringSealForTesting = null)
     {
         _ = trusted;
         _packageSourceRoot = packageSourceRoot;
@@ -42,15 +42,17 @@ public sealed class WorkerBroker : IWorkerBroker
             : Path.Combine(packageSourceRoot, packageManifest.Document.EntryPoint);
         _policy = policy;
         _prepareOutputForTesting = prepareOutputForTesting;
-        _attemptPackageReplacementForTesting = attemptPackageReplacementForTesting;
+        _attemptPackageReplacementDuringSealForTesting =
+            attemptPackageReplacementDuringSealForTesting;
     }
 
     internal WorkerBroker(
         string packageSourceRoot, WorkerPackageManifest packageManifest,
         WorkerIsolationPolicy? policy = null, Action<string>? prepareOutputForTesting = null,
-        Action<string>? attemptPackageReplacementForTesting = null) : this(
+        Action<string>? attemptPackageReplacementDuringSealForTesting = null) : this(
             packageSourceRoot, packageManifest, policy ?? WorkerIsolationPolicy.Default,
-            trusted: true, prepareOutputForTesting, attemptPackageReplacementForTesting) { }
+            trusted: true, prepareOutputForTesting,
+            attemptPackageReplacementDuringSealForTesting) { }
 
     public static IWorkerBroker CreateAuthenticated(
         string packageSourceRoot, byte[] manifestJson, byte[] signature, byte[] trustedPublicKey)
@@ -75,7 +77,6 @@ public sealed class WorkerBroker : IWorkerBroker
 
         try
         {
-            WorkerResourceScavenger.ScavengeDefault();
             _ = GetSampleSize(sampleHandle);
             return await AnalyzeIsolatedAsync(sampleHandle, request, null, cancellationToken).ConfigureAwait(false);
         }
@@ -136,9 +137,9 @@ public sealed class WorkerBroker : IWorkerBroker
             _prepareOutputForTesting?.Invoke(outputDirectory);
             using var packageLease = WorkerPackageStager.Stage(
                 _packageSourceRoot!, packageDirectory, _packageManifest,
-                new System.Security.Principal.SecurityIdentifier(profile.Sid));
+                new System.Security.Principal.SecurityIdentifier(profile.Sid),
+                _attemptPackageReplacementDuringSealForTesting);
             var launchExecutable = packageLease.EntryPoint;
-            _attemptPackageReplacementForTesting?.Invoke(packageDirectory);
             using var job = JobObject.Create(_policy);
             using var outputHandle = OpenPrivateOutput(outputDirectory);
             using var requestPipe = new AnonymousPipeServerStream(

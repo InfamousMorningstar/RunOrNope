@@ -45,13 +45,9 @@ public sealed class AppContainerProfile : IDisposable
         => CreatePrivateDirectory("output-", FileSystemRights.Modify | FileSystemRights.Synchronize |
                                              FileSystemRights.DeleteSubdirectoriesAndFiles);
 
-    internal string CreatePrivatePackageDirectory()
-    {
-        var path = CreatePrivateDirectory(
+    internal string CreatePrivatePackageDirectory() =>
+        CreatePrivateDirectory(
             "package-", FileSystemRights.ReadAndExecute | FileSystemRights.Synchronize);
-        File.WriteAllText(Path.Combine(path, WorkerResourceScavenger.ProfileMarkerName), Name);
-        return path;
-    }
 
     private string CreatePrivateDirectory(string prefix, FileSystemRights workerRights)
     {

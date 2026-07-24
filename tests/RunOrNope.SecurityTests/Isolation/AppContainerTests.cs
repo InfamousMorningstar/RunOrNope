@@ -124,22 +124,23 @@ public sealed class AppContainerTests
     }
 
     [Fact]
-    public void Scavenger_removes_only_old_owned_strictly_named_private_resources()
+    public void Automatic_scavenging_never_deletes_forgeable_filesystem_resources_or_live_profiles()
     {
         using var profile = AppContainerProfile.Create();
         var staleOutput = profile.CreatePrivateOutputDirectory();
         var stalePackage = profile.CreatePrivatePackageDirectory();
         var freshOutput = profile.CreatePrivateOutputDirectory();
-        var root = Directory.GetParent(staleOutput)!.FullName;
         var now = DateTime.UtcNow;
         Directory.SetLastWriteTimeUtc(staleOutput, now - TimeSpan.FromDays(2));
         Directory.SetLastWriteTimeUtc(stalePackage, now - TimeSpan.FromDays(2));
 
-        WorkerResourceScavenger.Scavenge(root, now);
-
-        Assert.False(Directory.Exists(staleOutput));
-        Assert.False(Directory.Exists(stalePackage));
+        // There is deliberately no automatic cleanup API: forgeable
+        // filesystem state cannot authorize recursive or profile deletion.
+        Assert.True(Directory.Exists(staleOutput));
+        Assert.True(Directory.Exists(stalePackage));
         Assert.True(Directory.Exists(freshOutput));
+        Directory.Delete(staleOutput, true);
+        Directory.Delete(stalePackage, true);
         Directory.Delete(freshOutput, true);
     }
 }

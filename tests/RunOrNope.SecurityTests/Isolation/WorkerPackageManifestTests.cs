@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Security.Cryptography;
+using System.Security.AccessControl;
 using RunOrNope.Broker.Windows;
 using Xunit;
 using RunOrNope.Contracts;
@@ -110,7 +111,7 @@ public sealed class WorkerPackageManifestTests
         var attempts = 0;
         string? stagedPackage = null;
         var broker = new WorkerBroker(root, manifest,
-            attemptPackageReplacementForTesting: package =>
+            attemptPackageReplacementDuringSealForTesting: package =>
             {
                 stagedPackage = package;
                 foreach (var name in ReplacementTargets)
@@ -133,6 +134,38 @@ public sealed class WorkerPackageManifestTests
             Assert.Equal(4, attempts);
             Assert.NotNull(stagedPackage);
             Assert.False(Directory.Exists(stagedPackage));
+        }
+        finally { File.Delete(sample); }
+    }
+
+    [Fact]
+    public async Task Same_user_write_during_handle_transition_is_detected_by_final_hash()
+    {
+        var (root, manifest) = WorkerEscapeTests.CreateAuthenticatedPackageForTests(
+            "RunOrNope.Worker", "RunOrNope.Worker.exe");
+        var broker = new WorkerBroker(root, manifest,
+            attemptPackageReplacementDuringSealForTesting: package =>
+            {
+                var path = Path.Combine(package, "RunOrNope.Worker.exe");
+                var user = WindowsIdentity.GetCurrent().User!;
+                var security = new FileSecurity();
+                security.SetAccessRuleProtection(true, false);
+                security.AddAccessRule(new FileSystemAccessRule(
+                    user, FileSystemRights.FullControl, AccessControlType.Allow));
+                new FileInfo(path).SetAccessControl(security);
+                File.WriteAllBytes(path, [0x4d, 0x5a]);
+            });
+        var sample = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllBytesAsync(sample, [1], TestContext.Current.CancellationToken);
+            using var handle = File.OpenHandle(sample, FileMode.Open, FileAccess.Read,
+                FileShare.Read | FileShare.Delete);
+            var result = await broker.AnalyzeAsync(handle,
+                new ScanRequest(sample, ScanMode.Quick), TestContext.Current.CancellationToken);
+            Assert.Equal(AnalysisStatus.IsolationUnavailable, result.AnalysisStatus);
+            Assert.Contains(result.CountervailingFacts,
+                fact => fact.Contains("changed while its launch lock", StringComparison.Ordinal));
         }
         finally { File.Delete(sample); }
     }

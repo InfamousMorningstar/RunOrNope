@@ -9,7 +9,7 @@ internal static class WorkerPackageStager
 {
     internal static WorkerPackageLease Stage(
         string sourceRoot, string destinationRoot, WorkerPackageManifest manifest,
-        SecurityIdentifier workerSid)
+        SecurityIdentifier workerSid, Action<string>? duringSealForTesting = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceRoot);
         ArgumentException.ThrowIfNullOrWhiteSpace(destinationRoot);
@@ -35,7 +35,8 @@ internal static class WorkerPackageStager
                 var destinationHandle = NativeMethods.CreateFileW(
                     destinationPath,
                     NativeMethods.GenericRead | NativeMethods.GenericWrite | NativeMethods.WriteDac,
-                    NativeMethods.FileShareRead, IntPtr.Zero, NativeMethods.CreateNew,
+                    NativeMethods.FileShareRead | NativeMethods.FileShareWrite,
+                    IntPtr.Zero, NativeMethods.CreateNew,
                     NativeMethods.FileFlagWriteThrough, IntPtr.Zero);
                 if (destinationHandle.IsInvalid)
                 {
@@ -55,15 +56,41 @@ internal static class WorkerPackageStager
                         $"Staged worker file '{entry.Name}' failed post-copy verification.");
             }
             SealPackage(destinationRoot, stagedWriters, workerSid);
+            var transitionalReaders = new List<FileStream>();
+            foreach (var path in stagedPaths)
+            {
+                var reader = new FileStream(
+                    path, FileMode.Open, FileAccess.Read,
+                    FileShare.Read | FileShare.Write);
+                transitionalReaders.Add(reader);
+                heldFiles.Add(reader);
+            }
             foreach (var writer in stagedWriters)
             {
                 writer.Dispose();
                 heldFiles.Remove(writer);
             }
-            // The protected read/execute-only ACL covers the transition from the
-            // verified writer to these long-lived deny-write/delete handles.
-            foreach (var path in stagedPaths)
-                heldFiles.Add(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read));
+            // Every identity remains held without delete sharing. The test hook
+            // attacks this exact writer-to-final-reader transition.
+            duringSealForTesting?.Invoke(destinationRoot);
+            for (var index = 0; index < stagedPaths.Count; index++)
+            {
+                var finalReader = new FileStream(
+                    stagedPaths[index], FileMode.Open, FileAccess.Read, FileShare.Read);
+                if (finalReader.Length != manifest.Document.Files[index].Size ||
+                    !HashMatches(finalReader, manifest.Document.Files[index].Sha256))
+                {
+                    finalReader.Dispose();
+                    throw new IsolationUnavailableException(
+                        $"Staged worker file '{manifest.Document.Files[index].Name}' changed while its launch lock was established.");
+                }
+                heldFiles.Add(finalReader);
+            }
+            foreach (var reader in transitionalReaders)
+            {
+                reader.Dispose();
+                heldFiles.Remove(reader);
+            }
             var lease = new WorkerPackageLease(
                 Path.Combine(destinationRoot, manifest.Document.EntryPoint), heldFiles);
             transferred = true;
@@ -98,13 +125,6 @@ internal static class WorkerPackageStager
                 workerSid, FileSystemRights.ReadAndExecute, AccessControlType.Allow));
             file.SetAccessControl(security);
         }
-        var markerSecurity = new FileSecurity();
-        markerSecurity.SetOwner(brokerSid);
-        markerSecurity.SetAccessRuleProtection(true, false);
-        markerSecurity.AddAccessRule(new FileSystemAccessRule(
-            brokerSid, FileSystemRights.Read, AccessControlType.Allow));
-        new FileInfo(Path.Combine(root, WorkerResourceScavenger.ProfileMarkerName))
-            .SetAccessControl(markerSecurity);
         var directorySecurity = new DirectorySecurity();
         directorySecurity.SetOwner(brokerSid);
         directorySecurity.SetAccessRuleProtection(true, false);

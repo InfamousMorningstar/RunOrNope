@@ -193,7 +193,19 @@ public sealed class WorkerEscapeTests
             Assert.False(ipv6.Pending());
             Assert.False(proxy.Pending());
             Assert.False(privateListener.Pending());
-            Assert.Equal(0, dns.Available);
+            using (var dnsGrace = new CancellationTokenSource(TimeSpan.FromMilliseconds(500)))
+            {
+                try
+                {
+                    var packet = await dns.ReceiveAsync(dnsGrace.Token);
+                    Assert.Fail(
+                        $"The isolated DNS probe delivered {packet.Buffer.Length} bytes to the controlled listener.");
+                }
+                catch (OperationCanceledException) when (dnsGrace.IsCancellationRequested)
+                {
+                    // No packet arrived during the bounded post-result window.
+                }
+            }
         }
         finally
         {
