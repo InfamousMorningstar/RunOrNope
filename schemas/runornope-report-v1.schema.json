@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://runornope.invalid/schemas/runornope-report-v1.schema.json",
+  "title": "RunOrNope report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "sampleName",
+    "analysisStatus",
+    "completeness",
+    "artifacts",
+    "observations",
+    "findings",
+    "countervailingFacts"
+  ],
+  "properties": {
+    "sampleName": { "$ref": "#/$defs/safeString" },
+    "analysisStatus": {
+      "enum": [ "complete", "incomplete", "unsupported-or-invalid-root-format", "isolation-unavailable" ]
+    },
+    "completeness": {
+      "enum": [ "complete", "truncated-by-policy", "unsupported", "encrypted", "malformed", "unavailable" ]
+    },
+    "artifacts": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": { "$ref": "#/$defs/artifact" }
+    },
+    "observations": {
+      "type": "array",
+      "maxItems": 65536,
+      "items": { "$ref": "#/$defs/observation" }
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "countervailingFacts": { "$ref": "#/$defs/stringArray" }
+  },
+  "$defs": {
+    "safeString": {
+      "type": "string",
+      "maxLength": 16384,
+      "pattern": "^[^\\u202A-\\u202E\\u2066-\\u2069]*$"
+    },
+    "stringArray": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": { "$ref": "#/$defs/safeString" }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "artifactId", "offset", "region" ],
+      "properties": {
+        "artifactId": { "$ref": "#/$defs/safeString" },
+        "offset": { "type": [ "integer", "null" ], "minimum": 0 },
+        "region": { "anyOf": [ { "$ref": "#/$defs/safeString" }, { "type": "null" } ] }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "id", "name", "sha256", "size", "completeness", "parentIds" ],
+      "properties": {
+        "id": { "$ref": "#/$defs/safeString" },
+        "name": { "$ref": "#/$defs/safeString" },
+        "sha256": { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" },
+        "size": { "type": "integer", "minimum": 0 },
+        "completeness": {
+          "enum": [ "complete", "truncated-by-policy", "unsupported", "encrypted", "malformed", "unavailable" ]
+        },
+        "parentIds": { "$ref": "#/$defs/stringArray" }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "id", "kind", "description", "parserConfidence", "source" ],
+      "properties": {
+        "id": { "$ref": "#/$defs/safeString" },
+        "kind": { "$ref": "#/$defs/safeString" },
+        "description": { "$ref": "#/$defs/safeString" },
+        "parserConfidence": { "enum": [ "unknown", "low", "medium", "high" ] },
+        "source": { "$ref": "#/$defs/source" }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title", "potentialImpact", "family", "evidenceStatus", "parserConfidence",
+        "evidenceConfidence", "severity", "applicationLinkage", "reachability",
+        "observationIds", "benignExplanations", "limitations", "recommendedAction"
+      ],
+      "properties": {
+        "title": { "$ref": "#/$defs/safeString" },
+        "potentialImpact": { "$ref": "#/$defs/safeString" },
+        "family": { "type": "string" },
+        "evidenceStatus": {
+          "enum": [
+            "confirmed-static-implementation", "strong-structural-evidence", "linked-implementation",
+            "api-or-library-presence-only", "heuristic", "unresolved"
+          ]
+        },
+        "parserConfidence": { "enum": [ "unknown", "low", "medium", "high" ] },
+        "evidenceConfidence": { "enum": [ "unknown", "low", "medium", "high" ] },
+        "severity": { "enum": [ "informational", "low", "medium", "high", "critical" ] },
+        "applicationLinkage": { "enum": [ "application", "dependency", "installer-stub", "unknown" ] },
+        "reachability": { "enum": [ "confirmed", "linked", "referenced", "unknown" ] },
+        "observationIds": { "$ref": "#/$defs/stringArray" },
+        "benignExplanations": { "$ref": "#/$defs/stringArray" },
+        "limitations": { "$ref": "#/$defs/stringArray" },
+        "recommendedAction": { "enum": [ "review-provenance", "exercise-caution", "do-not-run-and-escalate" ] }
+      }
+    }
+  }
+}
