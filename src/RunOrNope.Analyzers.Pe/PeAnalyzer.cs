@@ -14,7 +14,7 @@ public sealed class PeAnalyzer(IAuthenticodeTrustBackend? trustBackend = null) :
     {
         ArgumentNullException.ThrowIfNull(input);
         cancellationToken.ThrowIfCancellationRequested();
-        var layout = MinimalPeReader.Parse(input.Content, input.Length);
+        var layout = MinimalPeReader.Parse(input.Content, input.Length, cancellationToken);
         input.Content.Position = 0;
         var clr = ClrMetadataAnalyzer.Analyze(input.Content, input.Length, new ClrAnalysisLimits());
         input.Content.Position = 0;

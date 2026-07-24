@@ -10,7 +10,7 @@ public sealed class MinimalPeReaderTests
     public void Parse_ValidSyntheticPe_ReportsSectionAndOverlay()
     {
         var bytes = PeFixture.Create(sectionRawSize: 0x200, overlay: 17);
-        var result = MinimalPeReader.Parse(new MemoryStream(bytes), bytes.Length);
+        var result = MinimalPeReader.Parse(new MemoryStream(bytes), bytes.Length, TestContext.Current.CancellationToken);
         result.Sections.Should().ContainSingle();
         result.OverlayOffset.Should().Be(bytes.Length - 17);
         result.OverlayLength.Should().Be(17);
@@ -21,7 +21,7 @@ public sealed class MinimalPeReaderTests
     {
         var bytes = PeFixture.Create(sectionRawSize: 0x200);
         Array.Resize(ref bytes, bytes.Length - 1);
-        var act = () => MinimalPeReader.Parse(new MemoryStream(bytes), bytes.Length);
+        var act = () => MinimalPeReader.Parse(new MemoryStream(bytes), bytes.Length, TestContext.Current.CancellationToken);
         act.Should().Throw<PeFormatException>().WithMessage("*section*");
     }
 
@@ -30,7 +30,7 @@ public sealed class MinimalPeReaderTests
     {
         var bytes = PeFixture.Create();
         BitConverter.GetBytes(uint.MaxValue).CopyTo(bytes, 0x188 + 20);
-        var act = () => MinimalPeReader.Parse(new MemoryStream(bytes), bytes.Length);
+        var act = () => MinimalPeReader.Parse(new MemoryStream(bytes), bytes.Length, TestContext.Current.CancellationToken);
         act.Should().Throw<PeFormatException>();
     }
 
@@ -40,7 +40,7 @@ public sealed class MinimalPeReaderTests
         var bytes = PeFixture.Create();
         BitConverter.GetBytes((uint)(bytes.Length - 4)).CopyTo(bytes, 0x108 + 8 * 4);
         BitConverter.GetBytes(64u).CopyTo(bytes, 0x10c + 8 * 4);
-        var act = () => MinimalPeReader.Parse(new MemoryStream(bytes), bytes.Length);
+        var act = () => MinimalPeReader.Parse(new MemoryStream(bytes), bytes.Length, TestContext.Current.CancellationToken);
         act.Should().Throw<PeFormatException>().WithMessage("*certificate*");
     }
 
@@ -48,7 +48,7 @@ public sealed class MinimalPeReaderTests
     public void RvaToOffset_UnmappedRva_ReturnsNull()
     {
         var bytes = PeFixture.Create();
-        MinimalPeReader.Parse(new MemoryStream(bytes), bytes.Length)
+        MinimalPeReader.Parse(new MemoryStream(bytes), bytes.Length, TestContext.Current.CancellationToken)
             .RvaToFileOffset(0x900000).Should().BeNull();
     }
 
@@ -58,8 +58,40 @@ public sealed class MinimalPeReaderTests
         var bytes = PeFixture.Create();
         BitConverter.GetBytes(0x900000u).CopyTo(bytes, 0x108);
         BitConverter.GetBytes(16u).CopyTo(bytes, 0x10c);
-        var act = () => MinimalPeReader.Parse(new MemoryStream(bytes), bytes.Length);
+        var act = () => MinimalPeReader.Parse(new MemoryStream(bytes), bytes.Length, TestContext.Current.CancellationToken);
         act.Should().Throw<PeFormatException>().WithMessage("*directory 0*");
+    }
+
+    [Theory]
+    [InlineData(0x1f8u, 16u)]
+    [InlineData(0x11f0u, 32u)]
+    public void Parse_DataDirectoryCrossingOneContiguousMapping_IsRejected(uint rva, uint size)
+    {
+        var bytes = PeFixture.Create();
+        BitConverter.GetBytes(rva).CopyTo(bytes, 0x108);
+        BitConverter.GetBytes(size).CopyTo(bytes, 0x10c);
+        var act = () => MinimalPeReader.Parse(new MemoryStream(bytes), bytes.Length, TestContext.Current.CancellationToken);
+        act.Should().Throw<PeFormatException>().WithMessage("*directory 0*");
+    }
+
+    [Fact]
+    public void Parse_MisalignedCertificateTable_IsRejected()
+    {
+        var bytes = PeFixture.Create(overlay: 16);
+        BitConverter.GetBytes(0x401u).CopyTo(bytes, 0x128);
+        BitConverter.GetBytes(8u).CopyTo(bytes, 0x12c);
+        var act = () => MinimalPeReader.Parse(new MemoryStream(bytes), bytes.Length, TestContext.Current.CancellationToken);
+        act.Should().Throw<PeFormatException>().WithMessage("*aligned*");
+    }
+
+    [Fact]
+    public void Parse_CertificateOverlappingSection_IsRejected()
+    {
+        var bytes = PeFixture.Create();
+        BitConverter.GetBytes(0x200u).CopyTo(bytes, 0x128);
+        BitConverter.GetBytes(8u).CopyTo(bytes, 0x12c);
+        var act = () => MinimalPeReader.Parse(new MemoryStream(bytes), bytes.Length, TestContext.Current.CancellationToken);
+        act.Should().Throw<PeFormatException>().WithMessage("*overlaps*");
     }
 }
 

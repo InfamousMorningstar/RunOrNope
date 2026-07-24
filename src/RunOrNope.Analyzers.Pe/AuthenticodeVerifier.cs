@@ -18,7 +18,7 @@ public sealed class AuthenticodeVerifier(IAuthenticodeTrustBackend backend)
     public async ValueTask<AuthenticodeResult> VerifyAsync(Stream stream, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(stream);
-        var layout = MinimalPeReader.Parse(stream, stream.Length);
+        var layout = MinimalPeReader.Parse(stream, stream.Length, cancellationToken);
         var certificates = ValidateCertificateTable(stream, layout);
         stream.Position = 0;
         var result = await backend.VerifyAsync(stream, new AuthenticodePolicy(), cancellationToken).ConfigureAwait(false);

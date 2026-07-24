@@ -41,7 +41,7 @@ public sealed class AuthenticodeVerifierTests
         BitConverter.GetBytes((ushort)0x200).CopyTo(bytes, 0x404);
         BitConverter.GetBytes((ushort)2).CopyTo(bytes, 0x406);
         bytes[0x409] = 1;
-        var layout = MinimalPeReader.Parse(new MemoryStream(bytes), bytes.Length);
+        var layout = MinimalPeReader.Parse(new MemoryStream(bytes), bytes.Length, TestContext.Current.CancellationToken);
         var act = () => AuthenticodeVerifier.ValidateCertificateTable(new MemoryStream(bytes), layout);
         act.Should().Throw<PeFormatException>().WithMessage("*padding*");
     }

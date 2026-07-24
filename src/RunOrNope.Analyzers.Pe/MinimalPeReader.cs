@@ -9,7 +9,7 @@ public static class MinimalPeReader
     private const int MaximumSections = 96;
     private const int MaximumDirectories = 16;
 
-    public static PeLayout Parse(Stream stream, long declaredLength)
+    public static PeLayout Parse(Stream stream, long declaredLength, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(stream);
         if (!stream.CanRead || !stream.CanSeek) throw new ArgumentException("A readable, seekable bounded stream is required.", nameof(stream));
@@ -41,7 +41,8 @@ public static class MinimalPeReader
         if (sizeHeaders > declaredLength) throw new PeFormatException("Headers extend outside file.");
         var directoryCountOffset = pe32Plus ? 108 : 92;
         var directoryStart = pe32Plus ? 112 : 96;
-        var directoryCount = Math.Min(BinaryPrimitives.ReadUInt32LittleEndian(optional.AsSpan(directoryCountOffset)), MaximumDirectories);
+        var declaredDirectoryCount = BinaryPrimitives.ReadUInt32LittleEndian(optional.AsSpan(directoryCountOffset));
+        var directoryCount = Math.Min(declaredDirectoryCount, MaximumDirectories);
         if ((ulong)directoryStart + (ulong)directoryCount * 8 > (ulong)optional.Length)
             throw new PeFormatException("Data directories exceed optional header.");
 
@@ -77,10 +78,13 @@ public static class MinimalPeReader
             throw new PeFormatException("Section table exceeds declared headers.");
         var sections = ImmutableArray.CreateBuilder<PeSection>(sectionCount);
         var anomalies = ImmutableArray.CreateBuilder<string>();
+        if (declaredDirectoryCount > MaximumDirectories)
+            anomalies.Add($"{declaredDirectoryCount - MaximumDirectories} future data directories were not interpreted.");
         long imageEnd = sizeHeaders;
         Span<byte> header = stackalloc byte[40];
         for (var i = 0; i < sectionCount; i++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             header.Clear();
             ReadAt(stream, CheckedAdd(sectionTable, checked(i * 40L), "section header"), header, declaredLength, "section header");
             var nameLength = header[..8].IndexOf((byte)0);
@@ -100,9 +104,7 @@ public static class MinimalPeReader
         var frozenSections = sections.ToImmutable();
         foreach (var directory in rvaDirectories)
         {
-            var lastRva = CheckedLastRva(directory.Rva, directory.Size, directory.Index);
-            if (MapRva(directory.Rva, sizeHeaders, frozenSections) is null
-                || MapRva(lastRva, sizeHeaders, frozenSections) is null)
+            if (MapRvaRange(directory.Rva, directory.Size, sizeHeaders, frozenSections) is null)
                 throw new PeFormatException($"Data directory {directory.Index} is not backed by file bytes.");
         }
         for (var left = 0; left < frozenSections.Length; left++)
@@ -112,7 +114,22 @@ public static class MinimalPeReader
                 if (RangesOverlap(frozenSections[left].RawOffset, frozenSections[left].RawSize,
                     frozenSections[right].RawOffset, frozenSections[right].RawSize))
                     anomalies.Add($"Sections {frozenSections[left].Name} and {frozenSections[right].Name} overlap in file data.");
+                if (RangesOverlap(frozenSections[left].VirtualAddress,
+                    Math.Max(frozenSections[left].VirtualSize, frozenSections[left].RawSize),
+                    frozenSections[right].VirtualAddress,
+                    Math.Max(frozenSections[right].VirtualSize, frozenSections[right].RawSize)))
+                    anomalies.Add($"Sections {frozenSections[left].Name} and {frozenSections[right].Name} overlap in virtual memory.");
             }
+        }
+        if (certOffset is { } certificateStart)
+        {
+            if ((certificateStart & 7) != 0)
+                throw new PeFormatException("Certificate table is not 8-byte aligned.");
+            if (certificateStart < sizeHeaders
+                || frozenSections.Any(section => RangesOverlap(
+                    checked((uint)certificateStart), checked((uint)certLength),
+                    section.RawOffset, section.RawSize)))
+                throw new PeFormatException("Certificate table overlaps mapped image bytes.");
         }
         if (entry != 0)
         {
@@ -132,16 +149,25 @@ public static class MinimalPeReader
     private static bool Fits(uint offset, uint length, long fileLength) =>
         (ulong)offset + length <= (ulong)fileLength;
 
-    private static long? MapRva(uint rva, uint sizeOfHeaders, ImmutableArray<PeSection> sections)
+    private static long? MapRvaRange(
+        uint rva,
+        uint size,
+        uint sizeOfHeaders,
+        ImmutableArray<PeSection> sections)
     {
-        if (rva < sizeOfHeaders) return rva;
+        var lastRva = CheckedLastRva(rva, size, -1);
+        if (rva < sizeOfHeaders)
+            return lastRva < sizeOfHeaders ? rva : null;
         foreach (var section in sections)
         {
-            var span = Math.Max(section.VirtualSize, section.RawSize);
-            if (rva >= section.VirtualAddress && (ulong)rva < (ulong)section.VirtualAddress + span)
+            if (rva >= section.VirtualAddress
+                && (ulong)rva < (ulong)section.VirtualAddress + Math.Max(section.VirtualSize, section.RawSize))
             {
                 var delta = rva - section.VirtualAddress;
-                return delta < section.RawSize ? checked((long)section.RawOffset + delta) : null;
+                var endDelta = (ulong)delta + size;
+                return endDelta <= section.RawSize
+                    ? checked((long)section.RawOffset + delta)
+                    : null;
             }
         }
         return null;
@@ -155,7 +181,10 @@ public static class MinimalPeReader
     private static uint CheckedLastRva(uint rva, uint size, int index)
     {
         var end = (ulong)rva + size - 1;
-        if (end > uint.MaxValue) throw new PeFormatException($"Data directory {index} RVA overflows.");
+        if (end > uint.MaxValue)
+            throw new PeFormatException(index >= 0
+                ? $"Data directory {index} RVA overflows."
+                : "RVA range overflows.");
         return (uint)end;
     }
 
