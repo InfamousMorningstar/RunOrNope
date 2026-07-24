@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\RunOrNope.Contracts\RunOrNope.Contracts.csproj" />
+    <ProjectReference Include="..\RunOrNope.Core\RunOrNope.Core.csproj" />
+  </ItemGroup>
+</Project>

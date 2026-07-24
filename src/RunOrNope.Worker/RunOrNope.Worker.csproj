@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\RunOrNope.Analyzers.Content\RunOrNope.Analyzers.Content.csproj" />
+    <ProjectReference Include="..\RunOrNope.Analyzers.Msi\RunOrNope.Analyzers.Msi.csproj" />
+    <ProjectReference Include="..\RunOrNope.Analyzers.Pe\RunOrNope.Analyzers.Pe.csproj" />
+    <ProjectReference Include="..\RunOrNope.Contracts\RunOrNope.Contracts.csproj" />
+    <ProjectReference Include="..\RunOrNope.Rules\RunOrNope.Rules.csproj" />
+  </ItemGroup>
+</Project>

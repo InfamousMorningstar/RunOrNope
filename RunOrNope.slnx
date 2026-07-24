@@ -1,0 +1,20 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/RunOrNope.Analyzers.Content/RunOrNope.Analyzers.Content.csproj" />
+    <Project Path="src/RunOrNope.Analyzers.Msi/RunOrNope.Analyzers.Msi.csproj" />
+    <Project Path="src/RunOrNope.Analyzers.Pe/RunOrNope.Analyzers.Pe.csproj" />
+    <Project Path="src/RunOrNope.App/RunOrNope.App.csproj" />
+    <Project Path="src/RunOrNope.Broker.Windows/RunOrNope.Broker.Windows.csproj" />
+    <Project Path="src/RunOrNope.Contracts/RunOrNope.Contracts.csproj" />
+    <Project Path="src/RunOrNope.Core/RunOrNope.Core.csproj" />
+    <Project Path="src/RunOrNope.Intake/RunOrNope.Intake.csproj" />
+    <Project Path="src/RunOrNope.Reporting/RunOrNope.Reporting.csproj" />
+    <Project Path="src/RunOrNope.Rules/RunOrNope.Rules.csproj" />
+    <Project Path="src/RunOrNope.Worker/RunOrNope.Worker.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/RunOrNope.IntegrationTests/RunOrNope.IntegrationTests.csproj" />
+    <Project Path="tests/RunOrNope.SecurityTests/RunOrNope.SecurityTests.csproj" />
+    <Project Path="tests/RunOrNope.UnitTests/RunOrNope.UnitTests.csproj" />
+  </Folder>
+</Solution>

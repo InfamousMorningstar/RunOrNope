@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\RunOrNope.Broker.Windows\RunOrNope.Broker.Windows.csproj" />
+    <ProjectReference Include="..\RunOrNope.Contracts\RunOrNope.Contracts.csproj" />
+    <ProjectReference Include="..\RunOrNope.Core\RunOrNope.Core.csproj" />
+    <ProjectReference Include="..\RunOrNope.Reporting\RunOrNope.Reporting.csproj" />
+  </ItemGroup>
+</Project>

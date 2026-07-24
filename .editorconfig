@@ -1,0 +1,19 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = crlf
+insert_final_newline = true
+indent_style = space
+indent_size = 4
+trim_trailing_whitespace = true
+
+[*.{cs,csproj,props,slnx}]
+indent_size = 4
+
+[*.md]
+trim_trailing_whitespace = false
+
+[tests/**/*.cs]
+# xUnit test names intentionally read as behavior sentences.
+dotnet_diagnostic.CA1707.severity = none

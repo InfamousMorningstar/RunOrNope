@@ -1,0 +1,11 @@
+.tools/
+**/bin/
+**/obj/
+.vs/
+*.user
+*.suo
+TestResults/
+artifacts/
+
+# Private samples must never enter source control.
+SlydenSetupV2.exe

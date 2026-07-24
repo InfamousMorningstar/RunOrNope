@@ -1,0 +1,37 @@
+{
+  "version": 2,
+  "dependencies": {
+    "net10.0-windows10.0.19041": {
+      "runornope.broker.windows": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Contracts": "[1.0.0, )",
+          "RunOrNope.Intake": "[1.0.0, )"
+        }
+      },
+      "runornope.contracts": {
+        "type": "Project"
+      },
+      "runornope.core": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Contracts": "[1.0.0, )"
+        }
+      },
+      "runornope.intake": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Contracts": "[1.0.0, )"
+        }
+      },
+      "runornope.reporting": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Contracts": "[1.0.0, )",
+          "RunOrNope.Core": "[1.0.0, )"
+        }
+      }
+    },
+    "net10.0-windows10.0.19041/win-x64": {}
+  }
+}
