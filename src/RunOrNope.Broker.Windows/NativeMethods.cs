@@ -26,6 +26,19 @@ internal static class NativeMethods
     internal const ulong MitigationCfg = 1UL << 40;
     internal const ulong MitigationImageLoad = (1UL << 52) | (1UL << 56) | (1UL << 60);
     internal const uint DuplicateSameAccess = 0x00000002;
+    internal const uint TokenQuery = 0x0008;
+    internal const uint FileListDirectory = 0x0001;
+    internal const uint FileAddFile = 0x0002;
+    internal const uint FileReadAttributes = 0x0080;
+    internal const uint FileShareRead = 0x1;
+    internal const uint FileShareWrite = 0x2;
+    internal const uint FileShareDelete = 0x4;
+    internal const uint OpenExisting = 3;
+    internal const uint FileFlagBackupSemantics = 0x02000000;
+    internal const uint FileFlagOpenReparsePoint = 0x00200000;
+    internal const int TokenIsAppContainer = 29;
+    internal const int TokenCapabilities = 30;
+    internal const int TokenAppContainerSid = 31;
 
     [DllImport("userenv.dll", CharSet = CharSet.Unicode)]
     internal static extern int CreateAppContainerProfile(
@@ -85,6 +98,35 @@ internal static class NativeMethods
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool GetFileSizeEx(SafeFileHandle file, out long size);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool OpenProcessToken(IntPtr process, uint desiredAccess, out SafeFileHandle token);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetTokenInformation(
+        SafeFileHandle token, int informationClass, IntPtr information,
+        uint informationLength, out uint returnLength);
+
+    [DllImport("advapi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool EqualSid(IntPtr first, IntPtr second);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsProcessInJob(
+        IntPtr process, SafeFileHandle? job, [MarshalAs(UnmanagedType.Bool)] out bool result);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetProcessMitigationPolicy(
+        IntPtr process, int policy, out uint buffer, nuint length);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern SafeFileHandle CreateFileW(
+        string name, uint desiredAccess, uint shareMode, IntPtr securityAttributes,
+        uint creationDisposition, uint flagsAndAttributes, IntPtr template);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

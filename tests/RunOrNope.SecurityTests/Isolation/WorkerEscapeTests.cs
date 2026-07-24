@@ -71,6 +71,35 @@ public sealed class WorkerEscapeTests
     }
 
     [Fact]
+    public async Task Result_reader_rejects_duplicate_members_before_materialization()
+    {
+        await using var stream = new MemoryStream();
+        await WorkerProtocol.WriteFrameAsync(stream,
+            Encoding.UTF8.GetBytes("""{"sampleName":"","sampleName":"x"}"""),
+            TestContext.Current.CancellationToken);
+        stream.Position = 0;
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(
+            () => WorkerProtocol.ReadScanResultAsync(
+                stream, TestContext.Current.CancellationToken).AsTask());
+    }
+
+    [Fact]
+    public async Task Result_reader_rejects_collection_limit_before_materialization()
+    {
+        var values = string.Join(',', Enumerable.Repeat("\"x\"", ContractLimits.MaxNestedStrings + 1));
+        var json = $$"""{"sampleName":"","analysisStatus":"incomplete","completeness":"unavailable","artifacts":[],"observations":[],"findings":[],"countervailingFacts":[{{values}}]}""";
+        await using var stream = new MemoryStream();
+        await WorkerProtocol.WriteFrameAsync(stream, Encoding.UTF8.GetBytes(json),
+            TestContext.Current.CancellationToken);
+        stream.Position = 0;
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(
+            () => WorkerProtocol.ReadScanResultAsync(
+                stream, TestContext.Current.CancellationToken).AsTask());
+    }
+
+    [Fact]
     public async Task Unpackaged_dev_worker_fails_closed_when_appcontainer_cannot_load_runtime()
     {
         var path = Path.Combine(Path.GetTempPath(), $"runornope-benign-{Guid.NewGuid():N}.bin");

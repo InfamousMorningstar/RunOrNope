@@ -9,6 +9,11 @@ namespace RunOrNope.Broker.Windows;
 /// </summary>
 internal sealed class JobObject : IDisposable
 {
+    internal const uint RequiredLimitFlags =
+        NativeMethods.JobObjectLimitActiveProcess |
+        NativeMethods.JobObjectLimitKillOnJobClose |
+        NativeMethods.JobObjectLimitProcessMemory |
+        NativeMethods.JobObjectLimitProcessTime;
     private SafeFileHandle? _handle;
 
     private JobObject(SafeFileHandle handle) => _handle = handle;
@@ -37,10 +42,7 @@ internal sealed class JobObject : IDisposable
                 {
                     ActiveProcessLimit = policy.ActiveProcessLimit,
                     PerProcessUserTimeLimit = policy.ProcessCpuTime.Ticks,
-                    LimitFlags = NativeMethods.JobObjectLimitActiveProcess |
-                                 NativeMethods.JobObjectLimitKillOnJobClose |
-                                 NativeMethods.JobObjectLimitProcessMemory |
-                                 NativeMethods.JobObjectLimitProcessTime
+                    LimitFlags = RequiredLimitFlags
                 },
                 ProcessMemoryLimit = checked((nuint)policy.ProcessMemoryBytes)
             };
@@ -55,6 +57,8 @@ internal sealed class JobObject : IDisposable
             var actual = job.QueryLimits();
             if (actual.ActiveProcessLimit != policy.ActiveProcessLimit ||
                 actual.ProcessMemoryBytes != policy.ProcessMemoryBytes ||
+                actual.ProcessCpuTime != policy.ProcessCpuTime ||
+                actual.LimitFlags != RequiredLimitFlags ||
                 !actual.KillOnClose)
                 throw new IsolationUnavailableException("Windows did not preserve the required Job Object limits.");
             return job;
@@ -77,11 +81,14 @@ internal sealed class JobObject : IDisposable
                 $"Windows could not verify Job Object limits (error {System.Runtime.InteropServices.Marshal.GetLastWin32Error()}).");
         return new(information.BasicLimitInformation.ActiveProcessLimit,
             checked((long)information.ProcessMemoryLimit),
-            (information.BasicLimitInformation.LimitFlags &
-             NativeMethods.JobObjectLimitKillOnJobClose) != 0);
+            TimeSpan.FromTicks(information.BasicLimitInformation.PerProcessUserTimeLimit),
+            information.BasicLimitInformation.LimitFlags,
+            (information.BasicLimitInformation.LimitFlags & NativeMethods.JobObjectLimitKillOnJobClose) != 0);
     }
 
     public void Dispose() => Interlocked.Exchange(ref _handle, null)?.Dispose();
 }
 
-internal readonly record struct JobLimits(uint ActiveProcessLimit, long ProcessMemoryBytes, bool KillOnClose);
+internal readonly record struct JobLimits(
+    uint ActiveProcessLimit, long ProcessMemoryBytes, TimeSpan ProcessCpuTime,
+    uint LimitFlags, bool KillOnClose);

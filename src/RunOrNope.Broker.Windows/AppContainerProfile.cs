@@ -48,6 +48,7 @@ public sealed class AppContainerProfile : IDisposable
             ?? throw new IsolationUnavailableException("The broker user SID is unavailable.");
         var worker = new SecurityIdentifier(Sid);
         var security = new DirectorySecurity();
+        security.SetOwner(currentUser);
         security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
         security.AddAccessRule(new FileSystemAccessRule(
             currentUser, FileSystemRights.FullControl, InheritanceFlags.ContainerInherit |
@@ -67,18 +68,34 @@ public sealed class AppContainerProfile : IDisposable
             Directory.Delete(root);
             throw new IsolationUnavailableException("The private output ACL could not be verified.");
         }
-        var identities = actual.GetAccessRules(true, false, typeof(SecurityIdentifier))
-            .Cast<FileSystemAccessRule>()
-            .Where(rule => rule.AccessControlType == AccessControlType.Allow)
-            .Select(rule => rule.IdentityReference.Value)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        if (!identities.SetEquals([currentUser.Value, worker.Value]))
+        var owner = actual.GetOwner(typeof(SecurityIdentifier));
+        var rules = actual.GetAccessRules(true, false, typeof(SecurityIdentifier))
+            .Cast<FileSystemAccessRule>().ToArray();
+        var brokerRights = FileSystemRights.FullControl;
+        var workerRights = FileSystemRights.Modify | FileSystemRights.Synchronize |
+                           FileSystemRights.DeleteSubdirectoriesAndFiles;
+        if (!currentUser.Equals(owner) || rules.Length != 2 ||
+            !HasExactRule(rules, currentUser, brokerRights) ||
+            !HasExactRule(rules, worker, workerRights))
         {
             Directory.Delete(root);
-            throw new IsolationUnavailableException("The private output ACL contains unexpected principals.");
+            var detail = string.Join("; ", rules.Select(rule =>
+                $"{rule.IdentityReference}:{rule.FileSystemRights}:{rule.InheritanceFlags}:{rule.PropagationFlags}:{rule.AccessControlType}:{rule.IsInherited}"));
+            throw new IsolationUnavailableException(
+                $"The private output ACL is not canonical and exact (owner={owner}; {detail}).");
         }
         return root;
     }
+
+    private static bool HasExactRule(
+        IEnumerable<FileSystemAccessRule> rules, SecurityIdentifier sid, FileSystemRights rights) =>
+        rules.Any(rule =>
+            rule.IdentityReference.Equals(sid) &&
+            rule.AccessControlType == AccessControlType.Allow &&
+            rule.FileSystemRights == rights &&
+            rule.InheritanceFlags == (InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit) &&
+            rule.PropagationFlags == PropagationFlags.None &&
+            !rule.IsInherited);
 
     public void Dispose()
     {
@@ -105,7 +122,7 @@ public sealed record WorkerIsolationPolicy(
     bool KillOnJobClose,
     bool ProhibitDynamicCode,
     bool DisableExtensionPoints,
-    bool RestrictNonSystemImages,
+    bool RestrictRemoteAndLowIntegrityImagesPreferSystem32,
     bool RequirePrivateOutputAcl,
     long ProcessMemoryBytes,
     TimeSpan ProcessCpuTime,

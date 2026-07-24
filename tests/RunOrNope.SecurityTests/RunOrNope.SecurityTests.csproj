@@ -10,6 +10,5 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\RunOrNope.Broker.Windows\RunOrNope.Broker.Windows.csproj" />
-    <ProjectReference Include="..\..\src\RunOrNope.Worker\RunOrNope.Worker.csproj" />
   </ItemGroup>
 </Project>

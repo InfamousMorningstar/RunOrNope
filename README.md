@@ -24,14 +24,19 @@ and a Job Object with one-process, memory, CPU, and kill-on-close limits. It
 builds a suspended worker with an explicit three-handle allowlist (sample,
 request pipe, response pipe), assigns the Job before resuming, and exchanges
 versioned length-prefixed UTF-8/JSON frames whose size is checked before
-allocation. Any setup, launch, timeout, protocol, or result-validation failure
+allocation. A streaming token pass rejects duplicate members, excessive depth,
+strings, and collections before contract objects are materialized. While the
+worker is still suspended, the broker verifies its AppContainer token, exact
+package SID, zero capabilities, Job membership and limits, effective
+mitigations, and child-process restriction. Any setup, launch, timeout,
+protocol, or result-validation failure
 returns `IsolationUnavailable`; there is no ordinary-process fallback.
 
 This is still an implementation checkpoint, not a usable scanner. The
 framework-dependent development worker cannot load from an ordinary checkout
 inside AppContainer on the locally tested host, so that path is deliberately
 reported as isolation unavailable. A verified, self-contained packaged worker
-and post-launch mitigation/network escape matrix remain release blockers.
+and the full live network/resource escape matrix remain release blockers.
 
 ## Planned supported root formats
 
@@ -130,8 +135,8 @@ privacy controls.
 
 - Intake identifies root structure and hashes it, but no analyzer or user interface has been implemented.
 - Worker isolation primitives and hostile-output framing are implemented, but
-  the self-contained packaged worker, post-launch mitigation verification, and
-  IPv4/IPv6/loopback/proxy escape matrix are not complete.
+  an authenticated immutable worker manifest, successful packaged-worker IPC,
+  and the IPv4/IPv6/loopback/proxy/resource escape matrix are not complete.
 - Release-gating OS targets have not yet completed runtime/security validation.
 - No security claim should be inferred from this scaffold.
 - Contracts and intake are not yet wired into an end-to-end scan.

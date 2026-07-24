@@ -20,10 +20,24 @@ public sealed class AppContainerTests
         // can opt into dynamic-code prohibition with a stricter policy.
         Assert.False(policy.ProhibitDynamicCode);
         Assert.True(policy.DisableExtensionPoints);
-        Assert.True(policy.RestrictNonSystemImages);
+        Assert.True(policy.RestrictRemoteAndLowIntegrityImagesPreferSystem32);
         Assert.True(policy.RequirePrivateOutputAcl);
         Assert.InRange(policy.ProcessMemoryBytes, 16L * 1024 * 1024, 512L * 1024 * 1024);
         Assert.InRange(policy.WallClockTimeout, TimeSpan.FromMilliseconds(100), TimeSpan.FromMinutes(5));
+    }
+
+    [Fact]
+    public void Mitigation_mask_is_derived_from_policy()
+    {
+        var strict = WorkerIsolationPolicy.Default;
+        var managed = WorkerAttributeList.BuildMitigationMask(strict);
+        Assert.NotEqual(0UL, managed & NativeMethods.MitigationExtensionPoints);
+        Assert.NotEqual(0UL, managed & NativeMethods.MitigationImageLoad);
+        Assert.Equal(0UL, managed & NativeMethods.MitigationDynamicCode);
+
+        var native = strict with { ProhibitDynamicCode = true };
+        Assert.NotEqual(0UL,
+            WorkerAttributeList.BuildMitigationMask(native) & NativeMethods.MitigationDynamicCode);
     }
 
     [Fact]
@@ -59,7 +73,9 @@ public sealed class AppContainerTests
 
         Assert.Equal(1u, limits.ActiveProcessLimit);
         Assert.Equal(WorkerIsolationPolicy.Default.ProcessMemoryBytes, limits.ProcessMemoryBytes);
+        Assert.Equal(WorkerIsolationPolicy.Default.ProcessCpuTime, limits.ProcessCpuTime);
         Assert.True(limits.KillOnClose);
+        Assert.Equal(JobObject.RequiredLimitFlags, limits.LimitFlags);
     }
 
     [Fact]

@@ -80,6 +80,7 @@ public sealed class WorkerBroker : IWorkerBroker
         try
         {
             using var job = JobObject.Create(_policy);
+            using var outputHandle = OpenPrivateOutput(outputDirectory);
             using var requestPipe = new AnonymousPipeServerStream(
                 PipeDirection.Out, HandleInheritability.Inheritable);
             using var responsePipe = new AnonymousPipeServerStream(
@@ -92,13 +93,14 @@ public sealed class WorkerBroker : IWorkerBroker
             using (childSample)
             using (var attributes = WorkerAttributeList.Create(
                        profile.Sid,
-                       [childSample.DangerousGetHandle(),
+                       [childSample.DangerousGetHandle(), outputHandle.DangerousGetHandle(),
                         requestPipe.ClientSafePipeHandle.DangerousGetHandle(),
                         responsePipe.ClientSafePipeHandle.DangerousGetHandle()],
                        _policy))
             {
                 var command = $"\"{_workerExecutable}\" --broker " +
                               $"{childSample.DangerousGetHandle()} " +
+                              $"{outputHandle.DangerousGetHandle()} " +
                               $"{requestPipe.ClientSafePipeHandle.DangerousGetHandle()} " +
                               $"{responsePipe.ClientSafePipeHandle.DangerousGetHandle()}";
                 var startup = new NativeMethods.StartupInfoEx
@@ -117,6 +119,7 @@ public sealed class WorkerBroker : IWorkerBroker
                     if (!NativeMethods.AssignProcessToJobObject(job.Handle, process.Process))
                         throw new IsolationUnavailableException(
                             $"The worker could not be assigned to its Job Object (error {Marshal.GetLastWin32Error()}).");
+                    VerifySuspendedProcess(process.Process, profile.Sid, job, _policy);
                     if (NativeMethods.ResumeThread(process.Thread) == uint.MaxValue)
                         throw new IsolationUnavailableException(
                             $"The isolated worker could not be resumed (error {Marshal.GetLastWin32Error()}).");
@@ -129,13 +132,11 @@ public sealed class WorkerBroker : IWorkerBroker
                         GetSampleSize(sampleHandle));
                     await WorkerProtocol.WriteJsonFrameAsync(requestPipe, envelope, cancellationToken)
                         .ConfigureAwait(false);
-                    var readTask = WorkerProtocol.ReadJsonFrameAsync<WorkerResponseEnvelope>(
+                    var readTask = WorkerProtocol.ReadScanResultAsync(
                         responsePipe, cancellationToken).AsTask();
                     var response = await readTask.WaitAsync(_policy.WallClockTimeout, cancellationToken)
                         .ConfigureAwait(false);
-                    if (response.Version != WorkerProtocol.CurrentVersion)
-                        throw new IsolationUnavailableException("The worker returned an unsupported protocol version.");
-                    return ScanContractJson.Deserialize(response.ResultJson);
+                    return response;
                 }
                 catch (TimeoutException exception)
                 {
@@ -164,6 +165,96 @@ public sealed class WorkerBroker : IWorkerBroker
             throw new IsolationUnavailableException("The broker could not verify the intake handle size.");
         return size;
     }
+
+    private static SafeFileHandle OpenPrivateOutput(string path)
+    {
+        var handle = NativeMethods.CreateFileW(path,
+            NativeMethods.FileListDirectory | NativeMethods.FileAddFile | NativeMethods.FileReadAttributes,
+            NativeMethods.FileShareRead | NativeMethods.FileShareWrite | NativeMethods.FileShareDelete,
+            IntPtr.Zero, NativeMethods.OpenExisting,
+            NativeMethods.FileFlagBackupSemantics | NativeMethods.FileFlagOpenReparsePoint, IntPtr.Zero);
+        if (handle.IsInvalid)
+        {
+            handle.Dispose();
+            throw new IsolationUnavailableException("The private output directory handle could not be opened.");
+        }
+        return handle;
+    }
+
+    private static void VerifySuspendedProcess(
+        IntPtr process, IntPtr expectedPackageSid, JobObject job, WorkerIsolationPolicy policy)
+    {
+        if (!NativeMethods.OpenProcessToken(process, NativeMethods.TokenQuery, out var token))
+            throw new IsolationUnavailableException("The suspended worker token could not be opened.");
+        using (token)
+        {
+            var isAppContainer = ReadTokenInt32(token, NativeMethods.TokenIsAppContainer);
+            if (isAppContainer != 1)
+                throw new IsolationUnavailableException("The suspended worker is not an AppContainer.");
+            var packageInfo = ReadTokenBuffer(token, NativeMethods.TokenAppContainerSid);
+            try
+            {
+                var actualSid = Marshal.ReadIntPtr(packageInfo);
+                if (actualSid == IntPtr.Zero || !NativeMethods.EqualSid(actualSid, expectedPackageSid))
+                    throw new IsolationUnavailableException("The worker package SID does not match its unique profile.");
+            }
+            finally { Marshal.FreeHGlobal(packageInfo); }
+
+            var capabilities = ReadTokenBuffer(token, NativeMethods.TokenCapabilities);
+            try
+            {
+                if (Marshal.ReadInt32(capabilities) != 0)
+                    throw new IsolationUnavailableException("The worker token unexpectedly contains capabilities.");
+            }
+            finally { Marshal.FreeHGlobal(capabilities); }
+        }
+
+        if (!NativeMethods.IsProcessInJob(process, job.Handle, out var inExpectedJob) || !inExpectedJob)
+            throw new IsolationUnavailableException("The worker is not in the expected Job Object.");
+        var limits = job.QueryLimits();
+        if (limits.ActiveProcessLimit != policy.ActiveProcessLimit ||
+            limits.ProcessMemoryBytes != policy.ProcessMemoryBytes ||
+            limits.ProcessCpuTime != policy.ProcessCpuTime ||
+            limits.LimitFlags != JobObject.RequiredLimitFlags || !limits.KillOnClose)
+            throw new IsolationUnavailableException("The worker Job limits changed after assignment.");
+
+        RequireMitigation(process, 0, 1, "DEP");
+        RequireMitigation(process, 1, 0b111, "ASLR");
+        RequireMitigation(process, 6, 1, "extension-point disable");
+        RequireMitigation(process, 7, 1, "CFG");
+        RequireMitigation(process, 10, 0b111, "image-load");
+        RequireMitigation(process, 13, 1, "child-process restriction");
+        if (policy.ProhibitDynamicCode) RequireMitigation(process, 2, 1, "dynamic-code prohibition");
+    }
+
+    private static int ReadTokenInt32(SafeFileHandle token, int informationClass)
+    {
+        var buffer = ReadTokenBuffer(token, informationClass);
+        try { return Marshal.ReadInt32(buffer); }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
+
+    private static IntPtr ReadTokenBuffer(SafeFileHandle token, int informationClass)
+    {
+        uint required = 0;
+        _ = NativeMethods.GetTokenInformation(token, informationClass, IntPtr.Zero, 0, out required);
+        if (required == 0)
+            throw new IsolationUnavailableException("Windows did not size required token information.");
+        var buffer = Marshal.AllocHGlobal(checked((int)required));
+        if (!NativeMethods.GetTokenInformation(token, informationClass, buffer, required, out _))
+        {
+            Marshal.FreeHGlobal(buffer);
+            throw new IsolationUnavailableException("Windows could not verify required token information.");
+        }
+        return buffer;
+    }
+
+    private static void RequireMitigation(IntPtr process, int policy, uint requiredFlags, string name)
+    {
+        if (!NativeMethods.GetProcessMitigationPolicy(process, policy, out var flags, sizeof(uint)) ||
+            (flags & requiredFlags) != requiredFlags)
+            throw new IsolationUnavailableException($"The effective {name} mitigation was not verified.");
+    }
 }
 
 internal sealed class WorkerAttributeList : IDisposable
@@ -176,7 +267,7 @@ internal sealed class WorkerAttributeList : IDisposable
     internal static WorkerAttributeList Create(
         IntPtr appContainerSid, ReadOnlySpan<IntPtr> handles, WorkerIsolationPolicy policy)
     {
-        if (appContainerSid == IntPtr.Zero || handles.Length != 3 ||
+        if (appContainerSid == IntPtr.Zero || handles.Length != 4 ||
             handles.Contains(IntPtr.Zero) || handles.ToArray().Distinct().Count() != handles.Length)
             throw new IsolationUnavailableException("The explicit worker handle list is invalid.");
         var result = new WorkerAttributeList();
@@ -207,10 +298,7 @@ internal sealed class WorkerAttributeList : IDisposable
             result.Update(NativeMethods.ProcThreadAttributeSecurityCapabilities, capabilityBuffer,
                 checked((nuint)Marshal.SizeOf<NativeMethods.SecurityCapabilities>()));
 
-            var mitigation = NativeMethods.MitigationDep | NativeMethods.MitigationAslr |
-                             NativeMethods.MitigationCfg | NativeMethods.MitigationExtensionPoints |
-                             NativeMethods.MitigationImageLoad;
-            if (policy.ProhibitDynamicCode) mitigation |= NativeMethods.MitigationDynamicCode;
+            var mitigation = BuildMitigationMask(policy);
             var mitigationBuffer = result.Alloc(sizeof(ulong));
             Marshal.WriteInt64(mitigationBuffer, unchecked((long)mitigation));
             result.Update(NativeMethods.ProcThreadAttributeMitigationPolicy, mitigationBuffer, sizeof(ulong));
@@ -227,6 +315,19 @@ internal sealed class WorkerAttributeList : IDisposable
             result.Dispose();
             throw;
         }
+    }
+
+    internal static ulong BuildMitigationMask(WorkerIsolationPolicy policy)
+    {
+        var mitigation = NativeMethods.MitigationDep | NativeMethods.MitigationAslr |
+                         NativeMethods.MitigationCfg;
+        if (policy.DisableExtensionPoints)
+            mitigation |= NativeMethods.MitigationExtensionPoints;
+        if (policy.RestrictRemoteAndLowIntegrityImagesPreferSystem32)
+            mitigation |= NativeMethods.MitigationImageLoad;
+        if (policy.ProhibitDynamicCode)
+            mitigation |= NativeMethods.MitigationDynamicCode;
+        return mitigation;
     }
 
     private IntPtr Alloc(int bytes)

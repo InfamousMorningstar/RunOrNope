@@ -1,8 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
+    <SelfContained>true</SelfContained>
+    <PublishTrimmed>false</PublishTrimmed>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="WorkerProtocol.cs" />
     <ProjectReference Include="..\RunOrNope.Analyzers.Content\RunOrNope.Analyzers.Content.csproj" />
     <ProjectReference Include="..\RunOrNope.Analyzers.Msi\RunOrNope.Analyzers.Msi.csproj" />
     <ProjectReference Include="..\RunOrNope.Analyzers.Pe\RunOrNope.Analyzers.Pe.csproj" />

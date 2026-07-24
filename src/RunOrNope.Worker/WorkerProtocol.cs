@@ -2,13 +2,13 @@ using System.Buffers.Binary;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using RunOrNope.Contracts;
 
 namespace RunOrNope.Worker;
 
 public sealed class WorkerProtocolException(string message, Exception? inner = null) : IOException(message, inner);
 
 public sealed record WorkerRequestEnvelope(int Version, string Mode, long SampleSize);
-public sealed record WorkerResponseEnvelope(int Version, string ResultJson);
 
 public static class WorkerProtocol
 {
@@ -90,6 +90,99 @@ public static class WorkerProtocol
         if (request.Mode is not ("quick" or "deep")) throw new WorkerProtocolException("Unsupported scan mode.");
         if (request.SampleSize < 0) throw new WorkerProtocolException("Invalid sample size.");
         return request;
+    }
+
+    public static async ValueTask<ScanResult> ReadScanResultAsync(Stream stream, CancellationToken token)
+    {
+        var payload = await ReadFrameAsync(stream, token).ConfigureAwait(false);
+        ValidateResultTokens(payload);
+        try
+        {
+            return ScanContractJson.Deserialize(StrictUtf8.GetString(payload));
+        }
+        catch (Exception exception) when (
+            exception is JsonException or ContractValidationException or DecoderFallbackException)
+        {
+            throw new WorkerProtocolException("The scan result is invalid.", exception);
+        }
+    }
+
+    private static void ValidateResultTokens(ReadOnlySpan<byte> payload)
+    {
+        try
+        {
+            var reader = new Utf8JsonReader(payload, new JsonReaderOptions
+            {
+                CommentHandling = JsonCommentHandling.Disallow,
+                MaxDepth = 64
+            });
+            var objects = new Stack<HashSet<string>>();
+            var arrays = new Stack<(string? Name, int Count)>();
+            string? property = null;
+            while (reader.Read())
+            {
+                if (reader.TokenType is JsonTokenType.PropertyName or JsonTokenType.String)
+                {
+                    // UTF-8 bytes and JSON escapes are never fewer than the
+                    // decoded Unicode scalar count, so this conservative byte
+                    // ceiling enforces the scalar ceiling before GetString or
+                    // contract-object materialization.
+                    if (reader.HasValueSequence || reader.ValueSpan.Length > ContractLimits.MaxStringLength)
+                        throw new WorkerProtocolException("A result string exceeds its preallocation limit.");
+                }
+                switch (reader.TokenType)
+                {
+                    case JsonTokenType.StartObject:
+                        objects.Push(new(StringComparer.Ordinal));
+                        IncrementArray();
+                        break;
+                    case JsonTokenType.EndObject:
+                        objects.Pop();
+                        break;
+                    case JsonTokenType.PropertyName:
+                        property = reader.GetString() ??
+                                   throw new WorkerProtocolException("A property name is invalid.");
+                        if (objects.Count == 0 || !objects.Peek().Add(property))
+                            throw new WorkerProtocolException("Duplicate JSON members are forbidden.");
+                        break;
+                    case JsonTokenType.StartArray:
+                        arrays.Push((property, 0));
+                        property = null;
+                        break;
+                    case JsonTokenType.EndArray:
+                        arrays.Pop();
+                        break;
+                    default:
+                        if (reader.TokenType is not JsonTokenType.EndArray and not JsonTokenType.EndObject)
+                            IncrementArray();
+                        property = null;
+                        break;
+                }
+            }
+            if (objects.Count != 0 || arrays.Count != 0)
+                throw new WorkerProtocolException("The result JSON is structurally incomplete.");
+
+            void IncrementArray()
+            {
+                if (arrays.Count == 0) return;
+                var item = arrays.Pop();
+                item.Count++;
+                var maximum = item.Name switch
+                {
+                    "artifacts" => ContractLimits.MaxArtifacts,
+                    "observations" => ContractLimits.MaxObservations,
+                    "findings" => ContractLimits.MaxFindings,
+                    _ => ContractLimits.MaxNestedStrings
+                };
+                if (item.Count > maximum)
+                    throw new WorkerProtocolException($"Result collection '{item.Name}' exceeds its limit.");
+                arrays.Push(item);
+            }
+        }
+        catch (JsonException exception)
+        {
+            throw new WorkerProtocolException("The result JSON is invalid.", exception);
+        }
     }
 
     private static async ValueTask ReadExactlyAsync(Stream stream, Memory<byte> buffer, CancellationToken token)
