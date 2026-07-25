@@ -1,6 +1,6 @@
 using System.Collections.Immutable;
 using System.Text.Json;
-using FluentAssertions;
+using AwesomeAssertions;
 using Json.Schema;
 using RunOrNope.Contracts;
 using RunOrNope.Core.Evidence;
