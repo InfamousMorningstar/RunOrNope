@@ -5,6 +5,63 @@ what an untrusted executable or installer appears capable of doing. Its central
 promise is simple: submitted samples are **never executed** and **never
 uploaded** during local analysis.
 
+> ⚠️ **Work in progress — not a finished product.** RunOrNope is under active
+> development. The fail-closed isolation core and the PE/CLR analyzer exist and are
+> tested, but the end-to-end scan, capability rules, YARA-X, and the UI are not
+> finished. Nothing here is production-ready, and **no security claim should be
+> relied upon yet.**
+
+## What a report looks like (illustrative)
+
+> These examples show the **intended** output once capability analysis is fully
+> wired. They illustrate the report's shape and language — they are not produced by
+> the current build.
+
+RunOrNope reports capabilities in terms of the exact imports, strings, and IL it
+found, never as claims about what a file "did." Each line expands to the precise
+evidence — imported APIs, decoded strings, call sites, byte offsets — and an
+evidence tier, so a reviewer can check every claim.
+
+### Scanning a malware sample (e.g. an information stealer)
+
+**Verdict: High-risk static indicators** · Analysis: Complete within v1 policy
+
+- **Discord targeting** — pulls information from Discord and restarts the Discord
+  client; collects Discord account and friend information
+- **Credential access** — decrypts passwords and browser data from Chrome-style
+  browsers; decrypts Firefox passwords through Firefox's NSS system; reads browser
+  cookies and login databases
+- **Filesystem discovery & staging** — searches through Desktop and Documents;
+  collects files for exfiltration
+- **Data exfiltration & C2** — uploads collected files; receives remote commands
+  over an encrypted WebSocket connection
+- **Surveillance** — takes screenshots; accesses the webcam
+- **Process manipulation** — kills processes; injects code into another process;
+  spoofs process information to help hide what was running
+- **Privilege & tokens** — impersonates Windows security tokens
+- **Persistence & system config** — reads and changes the Windows Registry
+- **Destructive behavior** — encrypts, renames, overwrites, and truncates files
+
+**Recommended action:** do not run the file; verify its provenance or escalate to a
+qualified reviewer.
+
+### Scanning legitimate software
+
+**Verdict: Few material static concerns identified** · Analysis: Complete within v1 policy
+
+- Valid Authenticode signature; Windows platform trust verified the signer
+- Network use limited to update checks over HTTPS to the vendor's own domain
+- No credential-store access, process injection, surveillance, or destructive
+  capabilities found by the enabled checks
+
+> No material concerns were identified by the enabled static checks. This does not
+> rule out malicious behavior, downloaded components, environment-dependent actions,
+> or vulnerabilities outside RunOrNope's rules. Do not run a file solely because this
+> result is favorable.
+
+RunOrNope never labels a file "safe" outright — it reports what the enabled checks
+did and did not find, and always shows how complete the analysis was.
+
 ## Current status
 
 An implementation checkpoint — **not yet a usable scanner**. The security-critical
