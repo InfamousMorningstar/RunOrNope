@@ -38,10 +38,17 @@ internal static class WorkerScan
                 .ConfigureAwait(false);
             return PeScanResultMapper.Map(analysis, sha256, size);
         }
-        catch (IOException)
+        catch (Exception exception) when (
+            exception is IOException or BadImageFormatException or ArgumentException
+                or OverflowException or InvalidOperationException or IndexOutOfRangeException)
         {
-            // PeFormatException derives from IOException. A structural parser rejection
-            // maps to an incomplete/malformed result rather than propagating as a fault.
+            // PeFormatException derives from IOException, but the managed metadata reader
+            // (System.Reflection.Metadata) and AsmResolver reject hostile bytes with a wider
+            // fault set — most notably BadImageFormatException from the CLR metadata walk,
+            // which is only partially guarded inside the analyzers. Every such parser
+            // rejection maps to a malformed/incomplete result rather than propagating as a
+            // fault that would crash the worker and be mislabelled as an isolation failure.
+            // Cancellation and fatal/environmental faults are deliberately not caught here.
             return PeScanResultMapper.Malformed(sha256, size);
         }
     }
