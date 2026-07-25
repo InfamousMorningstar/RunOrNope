@@ -17,7 +17,7 @@ internal static class WorkerScan
     private const int MaxPeHeaderOffset = 1024 * 1024;
 
     internal static async ValueTask<ScanResult> AnalyzeAsync(
-        Stream sample, long size, string mode, CancellationToken cancellationToken,
+        Stream sample, long declaredSize, string mode, CancellationToken cancellationToken,
         IArtifactAnalyzer? analyzer = null)
     {
         ArgumentNullException.ThrowIfNull(sample);
@@ -26,6 +26,14 @@ internal static class WorkerScan
         sample.Position = 0;
         var hash = await SHA256.HashDataAsync(sample, cancellationToken).ConfigureAwait(false);
         var sha256 = Convert.ToHexStringLower(hash);
+
+        // Analyse and report the bytes actually present, never the broker's declared
+        // size. A disagreement is an integrity anomaly (the sample changed under a
+        // handle that should deny writes), so fail closed rather than analyse either
+        // interpretation.
+        var size = sample.Length;
+        if (declaredSize != size)
+            return PeScanResultMapper.Malformed(sha256, size);
 
         if (!IsPortableExecutable(sample, size))
             return PeScanResultMapper.Unsupported(sha256, size);

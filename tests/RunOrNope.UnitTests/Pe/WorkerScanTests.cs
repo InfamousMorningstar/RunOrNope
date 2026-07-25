@@ -104,6 +104,19 @@ public sealed class WorkerScanTests
         await act.Should().ThrowAsync<OperationCanceledException>();
     }
 
+    [Fact]
+    public async Task AnalyzeAsync_DeclaredSizeMismatch_IsMalformed()
+    {
+        var bytes = PeFixture.Create();
+        using var stream = new MemoryStream(bytes);
+
+        var result = await WorkerScan.AnalyzeAsync(
+            stream, bytes.Length + 1, "quick", TestContext.Current.CancellationToken);
+
+        result.AnalysisStatus.Should().Be(AnalysisStatus.Incomplete);
+        result.Completeness.Should().Be(ArtifactCompleteness.Malformed);
+    }
+
     private sealed class ThrowingAnalyzer(Exception fault) : IArtifactAnalyzer
     {
         public ValueTask<PeAnalysisResult> AnalyzeAsync(
