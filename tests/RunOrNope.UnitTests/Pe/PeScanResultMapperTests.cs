@@ -52,6 +52,19 @@ public sealed class PeScanResultMapperTests
     }
 
     [Fact]
+    public void Malformed_IsIncompleteWithMalformedRoot()
+    {
+        var result = PeScanResultMapper.Malformed(Sha, 0x800);
+
+        result.AnalysisStatus.Should().Be(AnalysisStatus.Incomplete);
+        result.Completeness.Should().Be(ArtifactCompleteness.Malformed);
+        result.Observations.Should().BeEmpty();
+        result.Artifacts.Should().ContainSingle()
+            .Which.Completeness.Should().Be(ArtifactCompleteness.Malformed);
+        RoundTrip(result);
+    }
+
+    [Fact]
     public void Map_ManagedAssembly_EmitsClrObservation()
     {
         var result = PeScanResultMapper.Map(Analysis(clr: ManagedClr()), Sha, 0x800);

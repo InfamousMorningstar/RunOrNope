@@ -38,6 +38,24 @@ public static class PeScanResultMapper
             ImmutableArray<string>.Empty);
     }
 
+    /// <summary>
+    /// Result for input that begins as a PE but fails structural parsing. Incomplete
+    /// with a <see cref="ArtifactCompleteness.Malformed"/> root — a parser rejection is
+    /// never treated as evidence that a capability is absent.
+    /// </summary>
+    public static ScanResult Malformed(string sha256, long size)
+    {
+        ArgumentNullException.ThrowIfNull(sha256);
+        ArgumentOutOfRangeException.ThrowIfNegative(size);
+        var root = new ArtifactNode(
+            RootArtifactId, string.Empty, sha256, size,
+            ArtifactCompleteness.Malformed, ImmutableArray<string>.Empty);
+        return new ScanResult(
+            string.Empty, AnalysisStatus.Incomplete, ArtifactCompleteness.Malformed,
+            ImmutableArray.Create(root), ImmutableArray<Observation>.Empty,
+            ImmutableArray<CapabilityFinding>.Empty, ImmutableArray<string>.Empty);
+    }
+
     public static ScanResult Map(PeAnalysisResult analysis, string sha256, long size)
     {
         ArgumentNullException.ThrowIfNull(analysis);
