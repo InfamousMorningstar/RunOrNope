@@ -204,15 +204,30 @@ public static class PeScanResultMapper
     {
         var builder = new StringBuilder(text.Length);
         foreach (var character in text)
-        {
-            var code = (int)character;
-            var isControl = code < 0x20 || (code >= 0x7F && code <= 0x9F);
-            builder.Append(isControl ? '.' : character);
-        }
+            builder.Append(IsUnsafe(character) ? '.' : character);
 
         var cleaned = builder.ToString();
-        return cleaned.Length <= ContractLimits.MaxStringLength
-            ? cleaned
-            : cleaned[..ContractLimits.MaxStringLength];
+        if (cleaned.Length <= ContractLimits.MaxStringLength)
+            return cleaned;
+
+        // Never truncate through a surrogate pair; the contract validator rejects a
+        // lone surrogate as malformed Unicode.
+        var end = ContractLimits.MaxStringLength;
+        if (char.IsHighSurrogate(cleaned[end - 1])) end--;
+        return cleaned[..end];
+    }
+
+    private static bool IsUnsafe(char character)
+    {
+        var code = (int)character;
+        // C0/C1 control characters and DEL, plus the bidirectional format controls the
+        // contract validator rejects (U+202A..U+202E, U+2066..U+2069). Neutralising them
+        // here guarantees observation text built from hostile metadata (e.g. a managed
+        // assembly name, which unlike an ASCII section name can carry arbitrary Unicode)
+        // still validates, instead of throwing at serialisation time and crashing the worker.
+        return code < 0x20
+            || (code >= 0x7F && code <= 0x9F)
+            || (code >= 0x202A && code <= 0x202E)
+            || (code >= 0x2066 && code <= 0x2069);
     }
 }

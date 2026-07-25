@@ -136,6 +136,25 @@ public sealed class PeScanResultMapperTests
         result.AnalysisStatus.Should().Be(AnalysisStatus.Complete);
     }
 
+    [Fact]
+    public void Map_HostileManagedNameWithBidiControl_StillValidates()
+    {
+        var hostileName = "evil" + (char)0x202E + "name";
+        var clr = new ClrAnalysisResult(
+            true, hostileName, ImmutableArray.Create("System.Runtime"),
+            ImmutableArray<ClrMethodObservation>.Empty,
+            ImmutableArray<ClrExternalReference>.Empty, false,
+            ImmutableArray<string>.Empty);
+
+        var result = PeScanResultMapper.Map(Analysis(clr: clr), Sha, 0x800);
+
+        // Would throw in ContractValidator (bidirectional control) if CleanText did
+        // not neutralise it; RoundTrip runs the full contract validation.
+        RoundTrip(result);
+        result.Observations.Should().Contain(o =>
+            o.Kind == "pe.clr" && !o.Description.Contains((char)0x202E));
+    }
+
     private static void RoundTrip(ScanResult result)
     {
         var json = ScanContractJson.Serialize(result);
