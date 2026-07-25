@@ -25,15 +25,9 @@ internal static class Program
             var request = await WorkerProtocol.ReadRequestAsync(requestStream, CancellationToken.None);
             if (sample.IsInvalid || outputHandle.IsInvalid || request.SampleSize < 0) return 65;
 
-            var result = new RunOrNope.Contracts.ScanResult(
-                string.Empty,
-                RunOrNope.Contracts.AnalysisStatus.Incomplete,
-                RunOrNope.Contracts.ArtifactCompleteness.Unavailable,
-                System.Collections.Immutable.ImmutableArray<RunOrNope.Contracts.ArtifactNode>.Empty,
-                System.Collections.Immutable.ImmutableArray<RunOrNope.Contracts.Observation>.Empty,
-                System.Collections.Immutable.ImmutableArray<RunOrNope.Contracts.CapabilityFinding>.Empty,
-                System.Collections.Immutable.ImmutableArray.Create(
-                    "The isolated worker started successfully; analyzers are not installed yet."));
+            await using var sampleStream = new FileStream(sample, FileAccess.Read);
+            var result = await WorkerScan.AnalyzeAsync(
+                sampleStream, request.SampleSize, request.Mode, CancellationToken.None);
             var response = System.Text.Encoding.UTF8.GetBytes(
                 RunOrNope.Contracts.ScanContractJson.Serialize(result));
             await WorkerProtocol.WriteFrameAsync(responseStream, response, CancellationToken.None);

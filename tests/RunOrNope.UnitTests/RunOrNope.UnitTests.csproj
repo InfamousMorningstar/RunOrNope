@@ -11,6 +11,11 @@
     <PackageReference Include="xunit.runner.visualstudio" />
   </ItemGroup>
   <ItemGroup>
+    <!-- The worker analysis core is exercised in-process, mirroring how Contracts links
+         WorkerProtocol.cs; the Worker is an exe and is not referenced as a project. -->
+    <Compile Include="..\..\src\RunOrNope.Worker\WorkerScan.cs" Link="Worker\WorkerScan.cs" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\..\src\RunOrNope.Contracts\RunOrNope.Contracts.csproj" />
     <ProjectReference Include="..\..\src\RunOrNope.Core\RunOrNope.Core.csproj" />
     <ProjectReference Include="..\..\src\RunOrNope.Intake\RunOrNope.Intake.csproj" />
