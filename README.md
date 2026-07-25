@@ -148,3 +148,25 @@ privacy controls.
 5. Evidence-backed capability rules and YARA-X integration.
 6. Script-free JSON/HTML reporting with privacy controls.
 7. WPF workflow, accessibility, packaging, CI, and security documentation.
+
+## License
+
+RunOrNope is released under the [MIT License](LICENSE).
+
+## Third-party components
+
+RunOrNope builds on free, open-source components, and integrates established
+open-source security tools rather than reinventing them. Every dependency's
+license is recorded in [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md); all are
+free to use and redistribute, and licenses are re-verified before each release.
+
+- **Currently bundled:** AsmResolver.PE (MIT) for PE parsing; JsonSchema.Net (MIT).
+- **Test-only:** AwesomeAssertions (Apache-2.0), xUnit (Apache-2.0), and the .NET
+  test SDK (MIT). None ship in the application.
+- **Planned, license-cleared security integrations:** YARA-X (BSD-3-Clause) with
+  curated, versioned rule packs; innoextract (zlib) and 7-Zip (LGPL-2.1+) as
+  isolated extraction adapters.
+
+Malware-family detection (for example information-stealer families) is carried
+only as YARA rules and signatures that *recognize* those families. RunOrNope never
+vendors malware samples or payloads into the repository or release artifacts.
