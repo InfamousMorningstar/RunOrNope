@@ -19,23 +19,30 @@ public static class PeScanResultMapper
     private const uint MemRead = 0x4000_0000;
     private const uint MemWrite = 0x8000_0000;
 
-    public static ScanResult Map(PeAnalysisResult analysis, string sha256, long size, bool isSupportedPe)
+    /// <summary>
+    /// Result for input whose bytes are not a supported PE. Carries the root
+    /// identity and an <see cref="AnalysisStatus.UnsupportedOrInvalidRootFormat"/>
+    /// status with no observations — never a favorable disposition.
+    /// </summary>
+    public static ScanResult Unsupported(string sha256, long size)
+    {
+        ArgumentNullException.ThrowIfNull(sha256);
+        ArgumentOutOfRangeException.ThrowIfNegative(size);
+        var root = new ArtifactNode(
+            RootArtifactId, string.Empty, sha256, size,
+            ArtifactCompleteness.Unsupported, ImmutableArray<string>.Empty);
+        return new ScanResult(
+            string.Empty, AnalysisStatus.UnsupportedOrInvalidRootFormat,
+            ArtifactCompleteness.Unsupported, ImmutableArray.Create(root),
+            ImmutableArray<Observation>.Empty, ImmutableArray<CapabilityFinding>.Empty,
+            ImmutableArray<string>.Empty);
+    }
+
+    public static ScanResult Map(PeAnalysisResult analysis, string sha256, long size)
     {
         ArgumentNullException.ThrowIfNull(analysis);
         ArgumentNullException.ThrowIfNull(sha256);
         ArgumentOutOfRangeException.ThrowIfNegative(size);
-
-        if (!isSupportedPe)
-        {
-            var unsupportedRoot = new ArtifactNode(
-                RootArtifactId, string.Empty, sha256, size,
-                ArtifactCompleteness.Unsupported, ImmutableArray<string>.Empty);
-            return new ScanResult(
-                string.Empty, AnalysisStatus.UnsupportedOrInvalidRootFormat,
-                ArtifactCompleteness.Unsupported, ImmutableArray.Create(unsupportedRoot),
-                ImmutableArray<Observation>.Empty, ImmutableArray<CapabilityFinding>.Empty,
-                ImmutableArray<string>.Empty);
-        }
 
         var layout = analysis.Layout;
         var clr = analysis.Clr;

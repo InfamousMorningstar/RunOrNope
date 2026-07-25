@@ -14,7 +14,7 @@ public sealed class PeScanResultMapperTests
     [Fact]
     public void Map_CleanNativePe_IsCompleteWithStructuralObservations()
     {
-        var result = PeScanResultMapper.Map(Analysis(), Sha, 0x800, isSupportedPe: true);
+        var result = PeScanResultMapper.Map(Analysis(), Sha, 0x800);
 
         result.AnalysisStatus.Should().Be(AnalysisStatus.Complete);
         result.Completeness.Should().Be(ArtifactCompleteness.Complete);
@@ -31,7 +31,7 @@ public sealed class PeScanResultMapperTests
     [Fact]
     public void Map_ObservationsAreRootSourcedWithDeterministicIds()
     {
-        var result = PeScanResultMapper.Map(Analysis(), Sha, 0x800, isSupportedPe: true);
+        var result = PeScanResultMapper.Map(Analysis(), Sha, 0x800);
 
         result.Observations.Should().OnlyContain(o => o.Source.ArtifactId == "root");
         result.Observations.Select(o => o.Id).Should().OnlyHaveUniqueItems();
@@ -41,7 +41,7 @@ public sealed class PeScanResultMapperTests
     [Fact]
     public void Map_UnsupportedBytes_IsUnsupportedWithNoObservations()
     {
-        var result = PeScanResultMapper.Map(Analysis(), Sha, 0x800, isSupportedPe: false);
+        var result = PeScanResultMapper.Unsupported(Sha, 0x800);
 
         result.AnalysisStatus.Should().Be(AnalysisStatus.UnsupportedOrInvalidRootFormat);
         result.Completeness.Should().Be(ArtifactCompleteness.Unsupported);
@@ -54,7 +54,7 @@ public sealed class PeScanResultMapperTests
     [Fact]
     public void Map_ManagedAssembly_EmitsClrObservation()
     {
-        var result = PeScanResultMapper.Map(Analysis(clr: ManagedClr()), Sha, 0x800, isSupportedPe: true);
+        var result = PeScanResultMapper.Map(Analysis(clr: ManagedClr()), Sha, 0x800);
 
         result.Observations.Should().Contain(o =>
             o.Kind == "pe.clr" && o.Description.Contains("Managed assembly"));
@@ -64,7 +64,7 @@ public sealed class PeScanResultMapperTests
     public void Map_TrustedSignature_AddsSingleCountervailingFact()
     {
         var result = PeScanResultMapper.Map(
-            Analysis(trust: Trust(TrustDisposition.Trusted)), Sha, 0x800, isSupportedPe: true);
+            Analysis(trust: Trust(TrustDisposition.Trusted)), Sha, 0x800);
 
         result.CountervailingFacts.Should().ContainSingle()
             .Which.Should().Contain("platform trust verified");
@@ -74,7 +74,7 @@ public sealed class PeScanResultMapperTests
     public void Map_UnsignedFile_HasNoCountervailingFact()
     {
         var result = PeScanResultMapper.Map(
-            Analysis(trust: Trust(TrustDisposition.NoSignature)), Sha, 0x800, isSupportedPe: true);
+            Analysis(trust: Trust(TrustDisposition.NoSignature)), Sha, 0x800);
 
         result.CountervailingFacts.Should().BeEmpty();
     }
@@ -84,7 +84,7 @@ public sealed class PeScanResultMapperTests
     {
         var result = PeScanResultMapper.Map(
             Analysis(limitations: ImmutableArray.Create("Rich parser skipped by byte limit.")),
-            Sha, 0x800, isSupportedPe: true);
+            Sha, 0x800);
 
         result.AnalysisStatus.Should().Be(AnalysisStatus.Incomplete);
         result.Completeness.Should().Be(ArtifactCompleteness.TruncatedByPolicy);
@@ -97,7 +97,7 @@ public sealed class PeScanResultMapperTests
         // Guards the reviewer's constraint: a padded managed binary must not earn a
         // Complete (favorable) verdict by exceeding the CLR walk limits.
         var result = PeScanResultMapper.Map(
-            Analysis(clr: ManagedClr(truncated: true)), Sha, 0x800, isSupportedPe: true);
+            Analysis(clr: ManagedClr(truncated: true)), Sha, 0x800);
 
         result.AnalysisStatus.Should().Be(AnalysisStatus.Incomplete);
     }
@@ -107,7 +107,7 @@ public sealed class PeScanResultMapperTests
     {
         var result = PeScanResultMapper.Map(
             Analysis(trust: Trust(TrustDisposition.IndeterminateOffline, revocationIndeterminate: true)),
-            Sha, 0x800, isSupportedPe: true);
+            Sha, 0x800);
 
         result.AnalysisStatus.Should().Be(AnalysisStatus.Incomplete);
     }
@@ -117,7 +117,7 @@ public sealed class PeScanResultMapperTests
     {
         var result = PeScanResultMapper.Map(
             Analysis(anomalies: ImmutableArray.Create("Entry point is outside an executable section.")),
-            Sha, 0x800, isSupportedPe: true);
+            Sha, 0x800);
 
         result.Observations.Should().Contain(o => o.Kind == "pe.anomaly");
         result.AnalysisStatus.Should().Be(AnalysisStatus.Complete);

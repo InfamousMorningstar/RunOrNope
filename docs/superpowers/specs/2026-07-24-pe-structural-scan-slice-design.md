@@ -40,9 +40,13 @@ A pure, deterministic static class. `RunOrNope.Analyzers.Pe` already references
 Signature:
 
 ```csharp
-public static ScanResult Map(
-    PeAnalysisResult analysis, string sha256, long size, bool isSupportedPe);
+public static ScanResult Map(PeAnalysisResult analysis, string sha256, long size);
+public static ScanResult Unsupported(string sha256, long size);
 ```
+
+`Map` is used when the bytes parsed as a PE; `Unsupported` is used when the
+in-worker byte check rejected the input, so the worker never needs a
+`PeAnalysisResult` for a non-PE file.
 
 Behaviour:
 
@@ -78,7 +82,7 @@ The mapper selects `AnalysisStatus` and `ArtifactCompleteness` honestly:
 
 | Situation | AnalysisStatus | Completeness |
 | --- | --- | --- |
-| `isSupportedPe == false` (bytes are not a PE) | `UnsupportedOrInvalidRootFormat` | `Unsupported` |
+| bytes are not a PE (`PeScanResultMapper.Unsupported`) | `UnsupportedOrInvalidRootFormat` | `Unsupported` |
 | PE parsed; no `Limitations`; rich parser agreed; CLR analysis not truncated (`Clr.TruncatedByPolicy == false`); trust resolved (`Trusted`/`Untrusted`/`NoSignature`) | `Complete` | `Complete` |
 | PE parsed but any `Limitations` present, or rich parser disagreed, or `Clr.TruncatedByPolicy == true`, or trust is `IndeterminateOffline` / `PlatformUnavailable` / `Malformed` | `Incomplete` | `TruncatedByPolicy` |
 
