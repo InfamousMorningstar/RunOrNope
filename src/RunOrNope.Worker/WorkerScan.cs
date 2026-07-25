@@ -17,7 +17,8 @@ internal static class WorkerScan
     private const int MaxPeHeaderOffset = 1024 * 1024;
 
     internal static async ValueTask<ScanResult> AnalyzeAsync(
-        Stream sample, long size, string mode, CancellationToken cancellationToken)
+        Stream sample, long size, string mode, CancellationToken cancellationToken,
+        IArtifactAnalyzer? analyzer = null)
     {
         ArgumentNullException.ThrowIfNull(sample);
         _ = mode; // Quick/Deep selection has no behavioural effect in the structural slice.
@@ -33,7 +34,7 @@ internal static class WorkerScan
         {
             sample.Position = 0;
             var input = new ArtifactInput("root", sample, size);
-            var analysis = await new PeAnalyzer()
+            var analysis = await (analyzer ?? new PeAnalyzer())
                 .AnalyzeAsync(input, new AnalysisContext(), cancellationToken)
                 .ConfigureAwait(false);
             return PeScanResultMapper.Map(analysis, sha256, size);

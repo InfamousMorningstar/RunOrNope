@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using AwesomeAssertions;
+using RunOrNope.Analyzers.Pe;
 using RunOrNope.Contracts;
 using RunOrNope.Worker;
 using Xunit;
@@ -55,6 +56,59 @@ public sealed class WorkerScanTests
         result.Completeness.Should().Be(ArtifactCompleteness.Malformed);
         result.Observations.Should().BeEmpty();
         RoundTrip(result);
+    }
+
+    [Theory]
+    [InlineData("badimage")]
+    [InlineData("overflow")]
+    [InlineData("invalidop")]
+    [InlineData("argument")]
+    [InlineData("io")]
+    public async Task AnalyzeAsync_AnalyzerParserFault_IsContainedAsMalformed(string kind)
+    {
+        // Locks the boundary fix: a parser fault from the analyzer (e.g. the CLR
+        // metadata walk throwing BadImageFormatException on a hostile managed PE)
+        // must become a Malformed result, never propagate and crash the worker.
+        Exception fault = kind switch
+        {
+            "badimage" => new BadImageFormatException(),
+            "overflow" => new OverflowException(),
+            "invalidop" => new InvalidOperationException(),
+            "argument" => new ArgumentException("simulated parser fault"),
+            "io" => new IOException(),
+            _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+        };
+        var bytes = PeFixture.Create();
+        using var stream = new MemoryStream(bytes);
+
+        var result = await WorkerScan.AnalyzeAsync(
+            stream, bytes.Length, "quick", TestContext.Current.CancellationToken,
+            new ThrowingAnalyzer(fault));
+
+        result.AnalysisStatus.Should().Be(AnalysisStatus.Incomplete);
+        result.Completeness.Should().Be(ArtifactCompleteness.Malformed);
+        result.Observations.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_AnalyzerCancellation_IsNotSwallowed()
+    {
+        // Cancellation and fatal faults must fail closed, not be mislabelled Malformed.
+        var bytes = PeFixture.Create();
+        using var stream = new MemoryStream(bytes);
+
+        var act = async () => await WorkerScan.AnalyzeAsync(
+            stream, bytes.Length, "quick", TestContext.Current.CancellationToken,
+            new ThrowingAnalyzer(new OperationCanceledException()));
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    private sealed class ThrowingAnalyzer(Exception fault) : IArtifactAnalyzer
+    {
+        public ValueTask<PeAnalysisResult> AnalyzeAsync(
+            ArtifactInput input, AnalysisContext context, CancellationToken cancellationToken) =>
+            throw fault;
     }
 
     private static void RoundTrip(ScanResult result)
