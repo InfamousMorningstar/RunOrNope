@@ -14,7 +14,7 @@ namespace RunOrNope.Analyzers.Pe;
 /// </summary>
 public static class PeScanResultMapper
 {
-    private const string RootArtifactId = "root";
+    private const string RootArtifactId = ScanArtifacts.RootId;
     private const uint MemExecute = 0x2000_0000;
     private const uint MemRead = 0x4000_0000;
     private const uint MemWrite = 0x8000_0000;

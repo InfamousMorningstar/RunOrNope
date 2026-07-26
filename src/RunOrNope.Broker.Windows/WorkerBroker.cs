@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
+using System.Security.Cryptography;
 using System.Security.Principal;
 using Microsoft.Win32.SafeHandles;
 using RunOrNope.Contracts;
@@ -129,6 +130,19 @@ public sealed class WorkerBroker : IWorkerBroker
         if (_policy.CapabilitySids.Count != 0)
             throw new IsolationUnavailableException("Worker network or other capabilities are forbidden.");
 
+        // Independently hash the sample through the broker's own handle so the untrusted
+        // worker's returned root identity can be verified before any of its result is
+        // trusted. Positioned reads leave the shared file pointer untouched, so this does
+        // not disturb the worker's own read of the duplicated handle. Skipped for probes,
+        // which analyse a generated bundle rather than the submitted sample.
+        string? expectedSha256 = null;
+        var expectedSize = 0L;
+        if (probe is null)
+        {
+            expectedSize = RandomAccess.GetLength(sampleHandle);
+            expectedSha256 = ComputeSampleSha256(sampleHandle, cancellationToken);
+        }
+
         using var profile = AppContainerProfile.Create();
         var outputDirectory = profile.CreatePrivateOutputDirectory();
         var packageDirectory = profile.CreatePrivatePackageDirectory();
@@ -198,6 +212,8 @@ public sealed class WorkerBroker : IWorkerBroker
                         responsePipe, cancellationToken).AsTask();
                     var response = await readTask.WaitAsync(_policy.WallClockTimeout, cancellationToken)
                         .ConfigureAwait(false);
+                    if (expectedSha256 is not null)
+                        WorkerResultIntegrity.EnsureRootIdentity(response, expectedSha256, expectedSize);
                     return response;
                 }
                 catch (TimeoutException exception)
@@ -259,6 +275,23 @@ public sealed class WorkerBroker : IWorkerBroker
             // lifecycle control. Cleanup retains locked private resources for
             // deliberate manual inspection rather than racing deletion.
         }
+    }
+
+    private static string ComputeSampleSha256(SafeFileHandle handle, CancellationToken cancellationToken)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[64 * 1024];
+        var length = RandomAccess.GetLength(handle);
+        var offset = 0L;
+        while (offset < length)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var read = RandomAccess.Read(handle, buffer, offset);
+            if (read == 0) break;
+            hash.AppendData(buffer.AsSpan(0, read));
+            offset += read;
+        }
+        return Convert.ToHexStringLower(hash.GetHashAndReset());
     }
 
     private static long GetSampleSize(SafeFileHandle handle)
