@@ -121,9 +121,9 @@ public sealed class WorkerEscapeTests
     [Fact]
     public async Task Authenticated_self_contained_worker_completes_benign_ipc()
     {
+        var bytes = new byte[] { 0x4D, 0x5A, 0, 0 };
         var path = Path.Combine(Path.GetTempPath(), $"runornope-benign-{Guid.NewGuid():N}.bin");
-        await File.WriteAllBytesAsync(path, [0x4D, 0x5A, 0, 0],
-            TestContext.Current.CancellationToken);
+        await File.WriteAllBytesAsync(path, bytes, TestContext.Current.CancellationToken);
         try
         {
             using var handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read,
@@ -135,10 +135,13 @@ public sealed class WorkerEscapeTests
             var result = await broker.AnalyzeAsync(
                 handle, new ScanRequest(path, ScanMode.Quick), TestContext.Current.CancellationToken);
 
-            Assert.True(result.AnalysisStatus == AnalysisStatus.Incomplete,
-                string.Join(Environment.NewLine, result.CountervailingFacts));
-            Assert.Contains(result.CountervailingFacts,
-                value => value.Contains("isolated worker started", StringComparison.OrdinalIgnoreCase));
+            // The worker ran real analysis over IPC: a 4-byte MZ stub is not a valid PE,
+            // so it is correctly classified Unsupported. A non-IsolationUnavailable result
+            // with the correct root hash also proves the broker's independent hash
+            // cross-check passed (a mismatch would fail closed to IsolationUnavailable).
+            Assert.Equal(AnalysisStatus.UnsupportedOrInvalidRootFormat, result.AnalysisStatus);
+            var rootArtifact = Assert.Single(result.Artifacts);
+            Assert.Equal(Convert.ToHexStringLower(SHA256.HashData(bytes)), rootArtifact.Sha256);
         }
         finally
         {

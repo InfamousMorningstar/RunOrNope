@@ -130,7 +130,9 @@ public sealed class WorkerPackageManifestTests
                 FileShare.Read | FileShare.Delete);
             var result = await broker.AnalyzeAsync(handle,
                 new ScanRequest(sample, ScanMode.Quick), TestContext.Current.CancellationToken);
-            Assert.Equal(AnalysisStatus.Incomplete, result.AnalysisStatus);
+            // The 1-byte sample is not a PE, so the real analyzer classifies it Unsupported;
+            // what this test guards is that the staged package could not be replaced.
+            Assert.Equal(AnalysisStatus.UnsupportedOrInvalidRootFormat, result.AnalysisStatus);
             Assert.Equal(4, attempts);
             Assert.NotNull(stagedPackage);
             Assert.False(Directory.Exists(stagedPackage));
