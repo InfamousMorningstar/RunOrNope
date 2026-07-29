@@ -9,6 +9,9 @@
     <PackageReference Include="xunit.runner.visualstudio" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\src\RunOrNope.App\RunOrNope.App.csproj" />
+    <ProjectReference Include="..\..\src\RunOrNope.Broker.Windows\RunOrNope.Broker.Windows.csproj" />
+    <ProjectReference Include="..\..\src\RunOrNope.Contracts\RunOrNope.Contracts.csproj" />
     <ProjectReference Include="..\..\src\RunOrNope.Intake\RunOrNope.Intake.csproj" />
   </ItemGroup>
 </Project>
