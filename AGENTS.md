@@ -88,7 +88,11 @@ Work is split by directory so two agents never edit the same file.
 | Lane | Owns | Tasks | Branch | Working directory |
 | --- | --- | --- | --- | --- |
 | **Parsing** | `src/RunOrNope.Analyzers.Content/`, `src/RunOrNope.Analyzers.Msi/`, their tests | 6, 7 | `feature/content-msi-analysis` | `RunOrNope/` (primary) |
-| **Delivery** | `src/RunOrNope.Reporting/`, `src/RunOrNope.App/`, `docs/`, `.github/`, `SECURITY.md`, `CONTRIBUTING.md` | 9, 10, 11 | `feature/reporting-app` | `RunOrNope-reporting/` (linked worktree) |
+| **Delivery** | `src/RunOrNope.Reporting/`, `src/RunOrNope.App/`, product docs in `docs/` (`ARCHITECTURE.md`, `THREAT_MODEL.md`, `PRIVACY.md`, …), `.github/`, `SECURITY.md`, `CONTRIBUTING.md` | 9, 10, 11 | `feature/reporting-app` | `RunOrNope-reporting/` (linked worktree) |
+
+`docs/superpowers/` is the exception both lanes share: plans and slice designs land
+there under dated, per-slice filenames, so two lanes writing at once never touch the
+same file.
 
 The two lanes run **concurrently** in separate git worktrees, so build output never
 collides. Stay in your own directory — `git checkout` of the other lane's branch will
