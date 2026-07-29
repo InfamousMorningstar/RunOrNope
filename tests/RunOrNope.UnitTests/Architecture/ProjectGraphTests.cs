@@ -102,7 +102,10 @@ internal static class RepositoryFiles
              directory is not null;
              directory = directory.Parent)
         {
-            if (Directory.Exists(Path.Combine(directory.FullName, ".git")))
+            // In a linked worktree ".git" is a file holding a "gitdir:" pointer rather
+            // than a directory, so a directory-only probe walks past the root and fails.
+            var marker = Path.Combine(directory.FullName, ".git");
+            if (Directory.Exists(marker) || File.Exists(marker))
             {
                 return directory.FullName;
             }
