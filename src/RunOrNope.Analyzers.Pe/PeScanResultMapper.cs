@@ -140,10 +140,84 @@ public static class PeScanResultMapper
             $"TLS directory {(rich.HasTlsDirectory ? "present" : "absent")}.",
             ParserConfidence.Medium);
 
+        // Capability rules can only cite imports whose names are readable, so an image
+        // that exposes none has either had its import table stripped (everything resolved
+        // at run time) or imports purely by ordinal. Either way the enabled checks cannot
+        // see what it calls, and that absence of evidence must never read as a favourable
+        // result: forcing Incomplete makes the verdict engine withhold a disposition
+        // rather than report the most favourable one available.
+        //
+        // Only judged when the rich parse produced a usable inventory. If it did not, a
+        // limitation already carries the incompleteness, and a visibility claim here
+        // would be describing an inventory that was never collected.
+        var importVisibilityUnknown = false;
+        if (analysis.Limitations.IsDefaultOrEmpty && !clr.IsManaged && layout.EntryPointRva != 0)
+        {
+            var readable = 0;
+            var unreadable = 0;
+            foreach (var import in rich.Imports)
+            {
+                // "module!Api" is readable; "module!#42" is an ordinal, and anything
+                // without a symbol is unusable to a rule just the same.
+                var bang = import.LastIndexOf('!');
+                if (bang < 0 || bang == import.Length - 1 || import[bang + 1] == '#') unreadable++;
+                else readable++;
+            }
+
+            if (readable == 0)
+            {
+                importVisibilityUnknown = true;
+                Add("pe.import-visibility",
+                    unreadable == 0
+                        ? "The import table is empty or absent, so no imported API names were available to " +
+                          "match. This is expected of a packed image that resolves its imports at run time."
+                        : $"All {unreadable} imported symbol(s) are ordinal-only, so no API names were " +
+                          "available to match.",
+                    ParserConfidence.High);
+            }
+            else if (unreadable >= readable)
+            {
+                importVisibilityUnknown = true;
+                Add("pe.import-visibility",
+                    $"{unreadable} of {readable + unreadable} imported symbol(s) are ordinal-only, so a " +
+                    "matchable API may not be visible to the enabled checks.",
+                    ParserConfidence.High);
+            }
+        }
+
+        // Per-API evidence observations that capability rules cite. Bounded so a
+        // pathological import table cannot flood the result; hitting the cap drops a
+        // potentially matchable API, which is a completeness event.
+        const int maxEvidenceObservations = 4096;
+        var evidenceEmitted = 0;
+        var evidenceTruncated = false;
+        void AddEvidence(string kind, string description)
+        {
+            if (evidenceEmitted >= maxEvidenceObservations)
+            {
+                evidenceTruncated = true;
+                return;
+            }
+            evidenceEmitted++;
+            Add(kind, description, ParserConfidence.High);
+        }
+
+        foreach (var import in rich.Imports)
+            AddEvidence("pe.import", import);
+        foreach (var reference in clr.ExternalReferences)
+        {
+            if (reference.SourceKind != "P/Invoke implementation") continue;
+            AddEvidence("pe.pinvoke", reference.DirectlyCalledByApplication
+                ? reference.DisplayName + " (app-called)"
+                : reference.DisplayName);
+        }
+
         var incomplete =
             !analysis.Limitations.IsDefaultOrEmpty
             || !analysis.RichParserAgreed
             || clr.TruncatedByPolicy
+            || evidenceTruncated
+            || importVisibilityUnknown
             || trust.Disposition is TrustDisposition.IndeterminateOffline
                 or TrustDisposition.PlatformUnavailable
                 or TrustDisposition.Malformed;

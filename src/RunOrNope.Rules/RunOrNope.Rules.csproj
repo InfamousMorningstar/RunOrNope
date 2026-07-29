@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
+    <!-- Contracts only, by design: the rules engine must have no compile-time path to
+         the verdict engine and scoring policy that live in RunOrNope.Core. -->
     <ProjectReference Include="..\RunOrNope.Contracts\RunOrNope.Contracts.csproj" />
-    <ProjectReference Include="..\RunOrNope.Core\RunOrNope.Core.csproj" />
   </ItemGroup>
 </Project>

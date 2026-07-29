@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Security.Cryptography;
 using RunOrNope.Analyzers.Pe;
 using RunOrNope.Contracts;
+using RunOrNope.Rules;
 
 namespace RunOrNope.Worker;
 
@@ -45,7 +46,8 @@ internal static class WorkerScan
             var analysis = await (analyzer ?? new PeAnalyzer())
                 .AnalyzeAsync(input, new AnalysisContext(), cancellationToken)
                 .ConfigureAwait(false);
-            return PeScanResultMapper.Map(analysis, sha256, size);
+            var result = PeScanResultMapper.Map(analysis, sha256, size);
+            return result with { Findings = CapabilityRuleEngine.Evaluate(result.Observations) };
         }
         catch (Exception exception) when (
             exception is IOException or BadImageFormatException or ArgumentException

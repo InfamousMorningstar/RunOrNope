@@ -20,5 +20,6 @@
     <ProjectReference Include="..\..\src\RunOrNope.Core\RunOrNope.Core.csproj" />
     <ProjectReference Include="..\..\src\RunOrNope.Intake\RunOrNope.Intake.csproj" />
     <ProjectReference Include="..\..\src\RunOrNope.Analyzers.Pe\RunOrNope.Analyzers.Pe.csproj" />
+    <ProjectReference Include="..\..\src\RunOrNope.Rules\RunOrNope.Rules.csproj" />
   </ItemGroup>
 </Project>

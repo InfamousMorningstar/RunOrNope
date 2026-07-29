@@ -1,7 +1,9 @@
+using System.Collections.Immutable;
 using System.Security.Cryptography;
 using AwesomeAssertions;
 using RunOrNope.Analyzers.Pe;
 using RunOrNope.Contracts;
+using RunOrNope.Core.Verdicts;
 using RunOrNope.Worker;
 using Xunit;
 
@@ -117,11 +119,116 @@ public sealed class WorkerScanTests
         result.Completeness.Should().Be(ArtifactCompleteness.Malformed);
     }
 
+    [Fact]
+    public async Task AnalyzeAsync_InjectionImports_YieldCautionVerdict()
+    {
+        var bytes = PeFixture.Create();
+        using var stream = new MemoryStream(bytes);
+        var analysis = AnalysisWithImports(
+            "kernel32.dll!VirtualAllocEx", "kernel32.dll!WriteProcessMemory",
+            "kernel32.dll!CreateRemoteThread");
+
+        var result = await WorkerScan.AnalyzeAsync(
+            stream, bytes.Length, "quick", TestContext.Current.CancellationToken,
+            new FixedAnalyzer(analysis));
+
+        result.Findings.Should().Contain(finding => finding.Family == RiskFamily.ProcessManipulation);
+        VerdictEngine.Evaluate(result).RiskDisposition.Should().Be(RiskDisposition.CautionWarranted);
+        RoundTrip(result);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_BenignImports_YieldFewMaterialConcerns()
+    {
+        var bytes = PeFixture.Create();
+        using var stream = new MemoryStream(bytes);
+        var analysis = AnalysisWithImports("kernel32.dll!CreateFileW", "kernel32.dll!ReadFile");
+
+        var result = await WorkerScan.AnalyzeAsync(
+            stream, bytes.Length, "quick", TestContext.Current.CancellationToken,
+            new FixedAnalyzer(analysis));
+
+        result.Findings.Should().BeEmpty();
+        result.AnalysisStatus.Should().Be(AnalysisStatus.Complete);
+        VerdictEngine.Evaluate(result).RiskDisposition.Should().Be(RiskDisposition.FewMaterialStaticConcerns);
+        RoundTrip(result);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_OrdinaryDesktopAppImports_YieldFewMaterialConcerns()
+    {
+        // A realistic benign import set: a plugin loader, an update check, a debugger
+        // check from the CRT, and double-buffered painting. Every presence-only rule
+        // fires, and they must still not add up to a caution — otherwise the first
+        // slice that produces a disposition would flag ordinary software.
+        var bytes = PeFixture.Create();
+        using var stream = new MemoryStream(bytes);
+        var analysis = AnalysisWithImports(
+            "kernel32.dll!LoadLibraryW", "kernel32.dll!GetProcAddress",
+            "ws2_32.dll!connect", "kernel32.dll!IsDebuggerPresent",
+            "gdi32.dll!BitBlt", "gdi32.dll!CreateCompatibleBitmap",
+            "kernel32.dll!CreateFileW", "kernel32.dll!ReadFile");
+
+        var result = await WorkerScan.AnalyzeAsync(
+            stream, bytes.Length, "quick", TestContext.Current.CancellationToken,
+            new FixedAnalyzer(analysis));
+
+        result.Findings.Should().NotBeEmpty();
+        result.Findings.Should().OnlyContain(finding =>
+            finding.EvidenceStatus == EvidenceStatus.ApiOrLibraryPresenceOnly);
+        result.AnalysisStatus.Should().Be(AnalysisStatus.Complete);
+        VerdictEngine.Evaluate(result).RiskDisposition.Should().Be(RiskDisposition.FewMaterialStaticConcerns);
+        RoundTrip(result);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_PackedSampleWithNoReadableImports_WithholdsDisposition()
+    {
+        // The failure this guards: a packed or ordinal-only sample matches no rule, so
+        // it produces no findings, and "no findings" would otherwise score as the most
+        // favorable disposition available. Absence of visible evidence must withhold a
+        // verdict, not earn a good one.
+        var bytes = PeFixture.Create();
+        using var stream = new MemoryStream(bytes);
+
+        var result = await WorkerScan.AnalyzeAsync(
+            stream, bytes.Length, "quick", TestContext.Current.CancellationToken,
+            new FixedAnalyzer(AnalysisWithImports()));
+
+        result.Findings.Should().BeEmpty();
+        result.AnalysisStatus.Should().Be(AnalysisStatus.Incomplete);
+        VerdictEngine.Evaluate(result).RiskDisposition.Should().BeNull();
+        RoundTrip(result);
+    }
+
+    private static PeAnalysisResult AnalysisWithImports(params string[] imports)
+    {
+        var section = new PeSection(".text", 0x1000, 0x200, 0x200, 0x200, 0x6000_0020);
+        var layout = new PeLayout(
+            true, 0x8664, 0x1000, 0x400, ImmutableArray.Create(section),
+            null, 0, 0, 0, ImmutableArray<string>.Empty);
+        var clr = new ClrAnalysisResult(
+            false, null, ImmutableArray<string>.Empty, ImmutableArray<ClrMethodObservation>.Empty,
+            ImmutableArray<ClrExternalReference>.Empty, false, ImmutableArray<string>.Empty);
+        var trust = new AuthenticodeResult(0, TrustDisposition.NoSignature, false, null, null, 0);
+        var rich = new RichPeSummary(
+            1, imports.Length, 0, 0, false, false,
+            [.. imports], ImmutableArray<string>.Empty);
+        return new PeAnalysisResult(layout, clr, trust, rich, RichParserAgreed: true, ImmutableArray<string>.Empty);
+    }
+
     private sealed class ThrowingAnalyzer(Exception fault) : IArtifactAnalyzer
     {
         public ValueTask<PeAnalysisResult> AnalyzeAsync(
             ArtifactInput input, AnalysisContext context, CancellationToken cancellationToken) =>
             throw fault;
+    }
+
+    private sealed class FixedAnalyzer(PeAnalysisResult result) : IArtifactAnalyzer
+    {
+        public ValueTask<PeAnalysisResult> AnalyzeAsync(
+            ArtifactInput input, AnalysisContext context, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(result);
     }
 
     private static void RoundTrip(ScanResult result)
