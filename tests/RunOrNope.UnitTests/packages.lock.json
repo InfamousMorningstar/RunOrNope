@@ -210,6 +210,12 @@
           "xunit.v3.runner.common": "[3.2.2]"
         }
       },
+      "runornope.analyzers.content": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Contracts": "[1.0.0, )"
+        }
+      },
       "runornope.analyzers.pe": {
         "type": "Project",
         "dependencies": {

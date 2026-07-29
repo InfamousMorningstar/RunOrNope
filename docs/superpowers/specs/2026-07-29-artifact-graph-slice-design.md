@@ -1,7 +1,7 @@
 # Artifact Graph Slice — Design
 
 **Date:** July 29, 2026
-**Status:** Draft, pending review
+**Status:** Implemented (slice 6a); 6b and 6c pending
 **Parent design:** `docs/superpowers/specs/2026-07-24-run-or-nope-design.md`
 **Plan task:** 6 (Artifact Graph, Strings, and Safe Nested Content)
 
@@ -114,11 +114,18 @@ common path.
 The invariant this slice establishes, and the reason the traversal surface is
 small: **a sample-controlled string is never passed to a filesystem API.**
 
-Artifacts are analyzed from memory. An artifact exceeding an in-memory threshold
-(16 MiB) spills to the worker's private AppContainer directory under a *generated
-opaque name* — `art-0007.bin`, derived from the artifact's own index and nothing
-else. Entry names from the container never reach `Path.Combine`, never influence a
-file location, and never determine an extension.
+Artifacts are analyzed from memory, bounded by `MaxArtifactBytes`. An artifact
+exceeding an in-memory threshold would spill to the worker's private AppContainer
+directory under a *generated opaque name* — `art-0007.bin`, derived from the
+artifact's own index and nothing else. Entry names from the container never reach
+`Path.Combine`, never influence a file location, and never determine an extension.
+
+**As built, 6a does no filesystem I/O at all.** Spilling is deferred to 6c, where the
+real container readers first produce artifacts large enough to need it. Holding
+everything in memory satisfies the invariant trivially rather than carefully, which is
+the better place to start: there is no path-handling code to get wrong yet, and the
+budget already caps what a single artifact can occupy. The invariant is what 6c must
+preserve, and the opaque-name scheme above is how it does so.
 
 `ArchivePathPolicy` therefore governs **display and identity only**. It classifies
 each entry name and returns a safe display form plus a reason when the name is

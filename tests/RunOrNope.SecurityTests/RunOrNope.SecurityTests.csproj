@@ -5,10 +5,19 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="AwesomeAssertions" />
     <PackageReference Include="xunit.v3" />
     <PackageReference Include="xunit.runner.visualstudio" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\src\RunOrNope.Analyzers.Content\RunOrNope.Analyzers.Content.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Shared with the unit tests rather than duplicated; slice 6a describes
+         containers directly instead of parsing a real archive format. -->
+    <Compile Include="..\RunOrNope.UnitTests\Content\TestContainerProvider.cs"
+             Link="Extraction\TestContainerProvider.cs" />
     <ProjectReference Include="..\..\src\RunOrNope.Broker.Windows\RunOrNope.Broker.Windows.csproj" />
   </ItemGroup>
   <Target Name="BuildSelfContainedWorker" BeforeTargets="Build">

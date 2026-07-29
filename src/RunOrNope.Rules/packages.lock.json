@@ -4,12 +4,6 @@
     "net10.0-windows10.0.19041": {
       "runornope.contracts": {
         "type": "Project"
-      },
-      "runornope.core": {
-        "type": "Project",
-        "dependencies": {
-          "RunOrNope.Contracts": "[1.0.0, )"
-        }
       }
     },
     "net10.0-windows10.0.19041/win-x64": {}
