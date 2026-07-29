@@ -2,6 +2,12 @@
   "version": 2,
   "dependencies": {
     "net10.0-windows10.0.19041": {
+      "AwesomeAssertions": {
+        "type": "Direct",
+        "requested": "[9.5.0, )",
+        "resolved": "9.5.0",
+        "contentHash": "F92MsjoF8B7IdcWETru4QGZx6VAl38qQPKNGS3kwPwlLB5lb0O4bhFqG8a8sz2estQJWkKmZkVy1r19HTaFcpg=="
+      },
       "Microsoft.NET.Test.Sdk": {
         "type": "Direct",
         "requested": "[18.0.1, )",
@@ -161,6 +167,12 @@
         "dependencies": {
           "xunit.v3.extensibility.core": "[3.2.2]",
           "xunit.v3.runner.common": "[3.2.2]"
+        }
+      },
+      "runornope.analyzers.content": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Contracts": "[1.0.0, )"
         }
       },
       "runornope.broker.windows": {

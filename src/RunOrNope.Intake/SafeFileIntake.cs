@@ -35,6 +35,18 @@ public sealed class SafeFileLease : IDisposable
         return _operations.ReadAsync(GetHandle(), destination, fileOffset, cancellationToken);
     }
 
+    /// <summary>
+    /// Lends the validated handle to the broker for the duration of one analysis. The
+    /// lease keeps ownership and the borrower must not dispose it; a borrower that needs
+    /// the handle to outlive a concurrent <see cref="Dispose"/> must hold a
+    /// <see cref="SafeHandle.DangerousAddRef"/> reference for that window.
+    ///
+    /// Deliberately internal and visible only to the broker: the presentation layer must
+    /// never hold an ownership-bearing handle, and re-opening the sample by path would
+    /// destroy the single-handle tamper guarantee this whole type exists to provide.
+    /// </summary>
+    internal SafeFileHandle BorrowHandle() => GetHandle();
+
     internal bool IsHandleClosedForTesting => _handle is null or { IsClosed: true };
 
     public void Dispose() => Interlocked.Exchange(ref _handle, null)?.Dispose();

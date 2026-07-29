@@ -47,7 +47,10 @@ internal static class WorkerScan
                 .AnalyzeAsync(input, new AnalysisContext(), cancellationToken)
                 .ConfigureAwait(false);
             var result = PeScanResultMapper.Map(analysis, sha256, size);
-            return result with { Findings = CapabilityRuleEngine.Evaluate(result.Observations) };
+            return result with
+            {
+                Findings = CapabilityRuleEngine.Evaluate(result.Observations, result.Artifacts),
+            };
         }
         catch (Exception exception) when (
             exception is IOException or BadImageFormatException or ArgumentException

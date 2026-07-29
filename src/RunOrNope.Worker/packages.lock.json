@@ -37,17 +37,10 @@
       "runornope.contracts": {
         "type": "Project"
       },
-      "runornope.core": {
-        "type": "Project",
-        "dependencies": {
-          "RunOrNope.Contracts": "[1.0.0, )"
-        }
-      },
       "runornope.rules": {
         "type": "Project",
         "dependencies": {
-          "RunOrNope.Contracts": "[1.0.0, )",
-          "RunOrNope.Core": "[1.0.0, )"
+          "RunOrNope.Contracts": "[1.0.0, )"
         }
       },
       "AsmResolver.PE": {

@@ -71,7 +71,9 @@ public static class PeScanResultMapper
         var sequence = 0;
         void Add(string kind, string description, ParserConfidence confidence, long? offset = null)
         {
-            var id = "pe-obs-" + (++sequence).ToString("D4", CultureInfo.InvariantCulture);
+            // Artifact-scoped, so uniqueness across a multi-artifact graph is structural
+            // rather than incidental, and an id names the artifact its evidence binds to.
+            var id = RootArtifactId + "-obs-" + (++sequence).ToString("D4", CultureInfo.InvariantCulture);
             observations.Add(new Observation(
                 id, kind, CleanText(description), confidence,
                 new SourceLocation(RootArtifactId, offset, null)));

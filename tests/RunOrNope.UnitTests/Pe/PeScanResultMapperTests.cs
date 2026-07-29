@@ -35,7 +35,7 @@ public sealed class PeScanResultMapperTests
 
         result.Observations.Should().OnlyContain(o => o.Source.ArtifactId == "root");
         result.Observations.Select(o => o.Id).Should().OnlyHaveUniqueItems();
-        result.Observations[0].Id.Should().Be("pe-obs-0001");
+        result.Observations[0].Id.Should().Be("root-obs-0001");
     }
 
     [Fact]

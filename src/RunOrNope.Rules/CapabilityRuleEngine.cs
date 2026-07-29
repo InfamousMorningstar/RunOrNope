@@ -15,25 +15,54 @@ public static class CapabilityRuleEngine
     private const string ImportKind = "pe.import";
     private const string PInvokeKind = "pe.pinvoke";
 
-    public static ImmutableArray<CapabilityFinding> Evaluate(ImmutableArray<Observation> observations)
+    /// <summary>
+    /// Evaluates the rule set once per artifact. Evidence is never combined across
+    /// artifacts: a capability is a claim about one file, and the contract requires a
+    /// finding's observations to resolve to a single artifact whose application linkage
+    /// matches the finding's.
+    /// </summary>
+    public static ImmutableArray<CapabilityFinding> Evaluate(
+        ImmutableArray<Observation> observations, ImmutableArray<ArtifactNode> artifacts)
     {
-        if (observations.IsDefaultOrEmpty)
+        if (observations.IsDefaultOrEmpty || artifacts.IsDefaultOrEmpty)
             return ImmutableArray<CapabilityFinding>.Empty;
 
-        // Upper-invariant API name -> the observation ids that evidence it.
-        var apiObservations = new Dictionary<string, SortedSet<string>>(StringComparer.Ordinal);
+        // Grouped in a single pass. Walking every observation once per artifact would be
+        // quadratic, and "many artifacts each holding many observations" is precisely the
+        // shape a container bomb produces.
+        var byArtifact = new Dictionary<string, Dictionary<string, SortedSet<string>>>(StringComparer.Ordinal);
         foreach (var observation in observations)
         {
+            if (observation?.Source?.ArtifactId is not { } artifactId) continue;
             var api = ExtractApiName(observation);
             if (api is null) continue;
+            if (!byArtifact.TryGetValue(artifactId, out var apiObservations))
+                byArtifact[artifactId] = apiObservations = new(StringComparer.Ordinal);
             if (!apiObservations.TryGetValue(api, out var ids))
                 apiObservations[api] = ids = new SortedSet<string>(StringComparer.Ordinal);
             ids.Add(observation.Id);
         }
-        if (apiObservations.Count == 0)
+        if (byArtifact.Count == 0)
             return ImmutableArray<CapabilityFinding>.Empty;
 
         var findings = ImmutableArray.CreateBuilder<CapabilityFinding>();
+
+        // Artifact order first, so output ordering stays deterministic across the graph.
+        foreach (var artifact in artifacts)
+        {
+            if (artifact?.Id is not { } id) continue;
+            if (!byArtifact.TryGetValue(id, out var apiObservations)) continue;
+            EvaluateArtifact(apiObservations, artifact, findings);
+        }
+
+        return findings.ToImmutable();
+    }
+
+    private static void EvaluateArtifact(
+        Dictionary<string, SortedSet<string>> apiObservations,
+        ArtifactNode artifact,
+        ImmutableArray<CapabilityFinding>.Builder findings)
+    {
         foreach (var rule in CapabilityRuleSet.Default)
         {
             var matchedIds = new SortedSet<string>(StringComparer.Ordinal);
@@ -75,12 +104,12 @@ public static class CapabilityRuleEngine
             findings.Add(new CapabilityFinding(
                 rule.Title, rule.PotentialImpact, rule.Family, rule.EvidenceStatus,
                 ParserConfidence.High, rule.EvidenceConfidence, rule.Severity,
-                ApplicationLinkage.Unknown, Reachability.Referenced,
+                // Taken from the artifact the evidence came from: the contract rejects a
+                // finding whose linkage disagrees with the artifact it cites.
+                artifact.ApplicationLinkage, Reachability.Referenced,
                 [.. matchedIds], rule.BenignExplanations,
                 ImmutableArray<string>.Empty, rule.RecommendedAction));
         }
-
-        return findings.ToImmutable();
     }
 
     /// <summary>
