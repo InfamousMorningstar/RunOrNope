@@ -85,10 +85,27 @@ compile; the constraint is the point.
 
 Work is split by directory so two agents never edit the same file.
 
-| Lane | Owns | Tasks |
-| --- | --- | --- |
-| **Parsing** | `src/RunOrNope.Analyzers.Content/`, `src/RunOrNope.Analyzers.Msi/`, their tests | 6, 7 |
-| **Delivery** | `src/RunOrNope.Reporting/`, `src/RunOrNope.App/`, `docs/`, `.github/`, `SECURITY.md`, `CONTRIBUTING.md` | 9, 10, 11 |
+| Lane | Owns | Tasks | Branch | Working directory |
+| --- | --- | --- | --- | --- |
+| **Parsing** | `src/RunOrNope.Analyzers.Content/`, `src/RunOrNope.Analyzers.Msi/`, their tests | 6, 7 | `feature/content-msi-analysis` | `RunOrNope/` (primary) |
+| **Delivery** | `src/RunOrNope.Reporting/`, `src/RunOrNope.App/`, `docs/`, `.github/`, `SECURITY.md`, `CONTRIBUTING.md` | 9, 10, 11 | `feature/reporting-app` | `RunOrNope-reporting/` (linked worktree) |
+
+The two lanes run **concurrently** in separate git worktrees, so build output never
+collides. Stay in your own directory — `git checkout` of the other lane's branch will
+be refused, and that refusal is the safety net working.
+
+`.tools/` is Git-ignored, so the linked worktree reaches the pinned SDK through a
+directory junction back to the primary checkout. Both `dotnet.exe` invocations share
+one 775 MB SDK and the machine-wide NuGet cache; concurrent restore and test runs
+across the two worktrees are verified to pass, security tests included. If the
+junction is ever lost, recreate it rather than re-downloading:
+
+```powershell
+New-Item -ItemType Junction -Path "<worktree>\.tools" -Target "<primary>\.tools"
+```
+
+Both lanes branch from `feature/initial-build`, which stays the integration branch.
+A change to a shared file lands there and both lanes fast-forward onto it.
 
 Stay in your lane. If you need something from the other lane, write against the
 interface you expect and leave a note — do not implement it yourself.
