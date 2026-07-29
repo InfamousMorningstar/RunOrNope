@@ -116,7 +116,15 @@ public static class HtmlReportWriter
         {
             builder.Append("<article><h3>"); SafeText.Append(builder, finding.Title);
             builder.Append("</h3><p>"); SafeText.Append(builder, finding.PotentialImpact);
-            builder.Append("</p><p>Evidence: "); SafeText.Append(builder, string.Join(", ", finding.ObservationIds));
+            builder.Append("</p><dl><dt>Severity</dt><dd>"); SafeText.Append(builder, Display(finding.Severity));
+            builder.Append("</dd><dt>Evidence status</dt><dd>"); SafeText.Append(builder, Display(finding.EvidenceStatus));
+            builder.Append("</dd><dt>Evidence confidence</dt><dd>"); SafeText.Append(builder, Display(finding.EvidenceConfidence));
+            builder.Append("</dd><dt>Reachability</dt><dd>"); SafeText.Append(builder, Display(finding.Reachability));
+            builder.Append("</dd><dt>Application linkage</dt><dd>"); SafeText.Append(builder, Display(finding.ApplicationLinkage));
+            builder.Append("</dd><dt>Risk family</dt><dd>"); SafeText.Append(builder, Display(finding.Family));
+            builder.Append("</dd><dt>Recommended action</dt><dd>"); SafeText.Append(builder, Display(finding.RecommendedAction));
+            builder.Append("</dd></dl>");
+            builder.Append("<p>Evidence: "); SafeText.Append(builder, string.Join(", ", finding.ObservationIds));
             builder.Append("</p>");
             AppendList(builder, "Benign explanations", finding.BenignExplanations);
             AppendList(builder, "Limitations", finding.Limitations);
@@ -135,6 +143,10 @@ public static class HtmlReportWriter
             builder.Append("</h3><p>"); SafeText.Append(builder, observation.Description);
             builder.Append("</p><p>Kind: "); SafeText.Append(builder, observation.Kind);
             builder.Append("; artifact: "); SafeText.Append(builder, observation.Source.ArtifactId);
+            builder.Append("; Offset: ");
+            SafeText.Append(builder, observation.Source.Offset?.ToString(CultureInfo.InvariantCulture) ?? "Not reported");
+            builder.Append("; Region: ");
+            SafeText.Append(builder, observation.Source.Region ?? "Not reported");
             builder.Append("</p></article>");
         }
         builder.Append("</section>");

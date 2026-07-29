@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Collections.Immutable;
 using AwesomeAssertions;
 using RunOrNope.Contracts;
 using RunOrNope.Reporting;
@@ -91,5 +92,21 @@ public sealed class JsonReportWriterTests
 
         ((Action)(() => JsonReportWriter.Write(ReportTestData.Complete(), options)))
             .Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void Write_AggregatesRecommendedActionByDeclaredEscalationOrder()
+    {
+        var template = ReportTestData.Complete();
+        var findings = ImmutableArray.Create(
+            template.Findings[0] with { RecommendedAction = RecommendedAction.DoNotRunAndEscalate },
+            template.Findings[0] with { RecommendedAction = RecommendedAction.ReviewProvenance },
+            template.Findings[0] with { RecommendedAction = RecommendedAction.ExerciseCaution });
+        var result = template with { Findings = findings };
+
+        using var document = JsonDocument.Parse(JsonReportWriter.Write(result));
+
+        document.RootElement.GetProperty("verdict").GetProperty("recommendedAction")
+            .GetString().Should().Be("do-not-run-and-escalate");
     }
 }

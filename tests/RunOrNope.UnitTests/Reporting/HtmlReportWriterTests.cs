@@ -92,5 +92,95 @@ public sealed class HtmlReportWriterTests
         ((Action)(() => HtmlReportWriter.Write(malformed))).Should().Throw<ContractValidationException>();
     }
 
+    [Fact]
+    public void Write_DistinguishesPresenceOnlyFindingFromStructuralFinding()
+    {
+        var template = ReportTestData.Complete();
+        var presence = template.Findings[0] with
+        {
+            Title = "Checks for a debugger",
+            Family = RiskFamily.DefenseEvasion,
+            Severity = Severity.Informational,
+            EvidenceStatus = EvidenceStatus.ApiOrLibraryPresenceOnly,
+            EvidenceConfidence = EvidenceConfidence.Low,
+            Reachability = Reachability.Referenced,
+            ApplicationLinkage = ApplicationLinkage.Dependency,
+            RecommendedAction = RecommendedAction.ReviewProvenance,
+            ObservationIds = ["obs-presence"],
+        };
+        var structural = template.Findings[0] with
+        {
+            Title = "Injects code into another process",
+            Family = RiskFamily.ProcessManipulation,
+            Severity = Severity.High,
+            EvidenceStatus = EvidenceStatus.StrongStructuralEvidence,
+            EvidenceConfidence = EvidenceConfidence.High,
+            Reachability = Reachability.Linked,
+            ApplicationLinkage = ApplicationLinkage.Application,
+            RecommendedAction = RecommendedAction.ExerciseCaution,
+            ObservationIds = ["obs-structural"],
+        };
+        var dependency = template.Artifacts[0] with
+        {
+            Id = "dependency",
+            Name = "library.dll",
+            ApplicationLinkage = ApplicationLinkage.Dependency,
+        };
+        var application = template.Artifacts[0] with
+        {
+            Id = "application",
+            ApplicationLinkage = ApplicationLinkage.Application,
+        };
+        var presenceObservation = template.Observations[0] with
+        {
+            Id = "obs-presence",
+            Source = new SourceLocation("dependency", 1, "imports"),
+        };
+        var structuralObservation = template.Observations[0] with
+        {
+            Id = "obs-structural",
+            Source = new SourceLocation("application", 2, "imports"),
+        };
+        var result = template with
+        {
+            Artifacts = [dependency, application],
+            Observations = [presenceObservation, structuralObservation],
+            Findings = [presence, structural],
+        };
+
+        var html = Decode(HtmlReportWriter.Write(result));
+
+        html.Should().Contain("Checks for a debugger")
+            .And.Contain("Informational")
+            .And.Contain("ApiOrLibraryPresenceOnly")
+            .And.Contain("ReviewProvenance")
+            .And.Contain("Injects code into another process")
+            .And.Contain("High")
+            .And.Contain("StrongStructuralEvidence")
+            .And.Contain("ExerciseCaution");
+        html.Should().Contain("DefenseEvasion").And.Contain("ProcessManipulation");
+        html.Should().Contain("Dependency").And.Contain("Application");
+        html.Should().Contain("Referenced").And.Contain("Linked");
+    }
+
+    [Fact]
+    public void Write_RendersObservationOffsetAndRegion()
+    {
+        var result = ReportTestData.Complete() with
+        {
+            Observations =
+            [
+                ReportTestData.Complete().Observations[0] with
+                {
+                    Source = new SourceLocation("root", 4660, "import table")
+                }
+            ]
+        };
+
+        var html = Decode(HtmlReportWriter.Write(result));
+
+        html.Should().Contain("Offset: 4660").And.Contain("Region: import table");
+    }
+
     private static string Decode(byte[] bytes) => StrictUtf8.GetString(bytes);
 }
