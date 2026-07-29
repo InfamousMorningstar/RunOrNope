@@ -223,6 +223,23 @@
           "RunOrNope.Contracts": "[1.0.0, )"
         }
       },
+      "runornope.app": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Broker.Windows": "[1.0.0, )",
+          "RunOrNope.Contracts": "[1.0.0, )",
+          "RunOrNope.Core": "[1.0.0, )",
+          "RunOrNope.Intake": "[1.0.0, )",
+          "RunOrNope.Reporting": "[1.0.0, )"
+        }
+      },
+      "runornope.broker.windows": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Contracts": "[1.0.0, )",
+          "RunOrNope.Intake": "[1.0.0, )"
+        }
+      },
       "runornope.contracts": {
         "type": "Project"
       },

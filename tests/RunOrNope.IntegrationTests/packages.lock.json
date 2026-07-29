@@ -163,10 +163,47 @@
           "xunit.v3.runner.common": "[3.2.2]"
         }
       },
+      "runornope.app": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Broker.Windows": "[1.0.0, )",
+          "RunOrNope.Contracts": "[1.0.0, )",
+          "RunOrNope.Core": "[1.0.0, )",
+          "RunOrNope.Intake": "[1.0.0, )",
+          "RunOrNope.Reporting": "[1.0.0, )"
+        }
+      },
+      "runornope.broker.windows": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Contracts": "[1.0.0, )",
+          "RunOrNope.Intake": "[1.0.0, )"
+        }
+      },
       "runornope.contracts": {
         "type": "Project"
       },
+      "runornope.core": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Contracts": "[1.0.0, )"
+        }
+      },
       "runornope.intake": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Contracts": "[1.0.0, )"
+        }
+      },
+      "runornope.reporting": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Contracts": "[1.0.0, )",
+          "RunOrNope.Core": "[1.0.0, )",
+          "RunOrNope.Rules": "[1.0.0, )"
+        }
+      },
+      "runornope.rules": {
         "type": "Project",
         "dependencies": {
           "RunOrNope.Contracts": "[1.0.0, )"

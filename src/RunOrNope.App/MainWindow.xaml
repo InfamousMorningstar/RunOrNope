@@ -1,0 +1,119 @@
+<Window x:Class="RunOrNope.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:views="clr-namespace:RunOrNope.App.Views"
+        Title="RunOrNope — static evidence workbench" Width="1180" Height="780"
+        MinWidth="900" MinHeight="620" Background="{StaticResource PaperBrush}"
+        AllowDrop="True" Drop="OnDrop" DragOver="OnDragOver"
+        FontFamily="Segoe UI" Foreground="{StaticResource InkBrush}">
+  <Window.InputBindings>
+    <KeyBinding Key="Enter" Modifiers="Control" Command="{Binding ScanCommand}"/>
+    <KeyBinding Key="Escape" Command="{Binding CancelCommand}"/>
+    <KeyBinding Key="V" Modifiers="Control+Shift" Command="{Binding LookupHashCommand}"/>
+    <KeyBinding Key="H" Modifiers="Control+Shift" Command="{Binding ExportHtmlCommand}"/>
+    <KeyBinding Key="J" Modifiers="Control+Shift" Command="{Binding ExportJsonCommand}"/>
+  </Window.InputBindings>
+  <Grid>
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="330"/>
+      <ColumnDefinition Width="8"/>
+      <ColumnDefinition Width="*"/>
+    </Grid.ColumnDefinitions>
+
+    <Border Grid.Column="0" Background="{StaticResource InkBrush}" Padding="26">
+      <DockPanel LastChildFill="True">
+        <StackPanel DockPanel.Dock="Top">
+          <TextBlock Text="RUN / OR / NOPE" Foreground="White" FontSize="26"
+                     FontFamily="Segoe UI Variable Display" FontWeight="Bold"/>
+          <TextBlock Text="STATIC EVIDENCE WORKBENCH" Foreground="#B7C6D3"
+                     FontSize="11" FontWeight="SemiBold" Margin="0,2,0,28"/>
+          <Border Background="#203B3A" BorderBrush="{StaticResource VerifiedBrush}"
+                  BorderThickness="4,0,0,0" Padding="14" Margin="0,0,0,22">
+            <StackPanel>
+              <TextBlock Text="Sample never executed" Foreground="White" FontWeight="Bold"/>
+              <TextBlock Text="Sample never uploaded" Foreground="White" FontWeight="Bold"/>
+            </StackPanel>
+          </Border>
+          <TextBlock Text="1  SELECT" Foreground="#B7C6D3" FontWeight="Bold"/>
+          <TextBox Text="{Binding SelectedPath, Mode=OneWay}" IsReadOnly="True"
+                   AutomationProperties.Name="Selected sample path" Margin="0,6,0,8"/>
+          <Button Content="_Browse local file" Click="OnBrowse" AutomationProperties.Name="Browse local file"/>
+          <TextBlock Text="Drop one local PE or MSI anywhere in this window."
+                     Foreground="#DCE5EC" TextWrapping="Wrap" Margin="0,8,0,24"/>
+          <TextBlock Text="2  DEPTH" Foreground="#B7C6D3" FontWeight="Bold"/>
+          <StackPanel Orientation="Horizontal" Margin="0,8,0,20">
+            <RadioButton Content="_Quick" IsChecked="{Binding IsQuickMode}" Foreground="White" Margin="0,0,20,0"/>
+            <RadioButton Content="_Deep" IsChecked="{Binding IsDeepMode}" Foreground="White"/>
+          </StackPanel>
+          <Button Content="_Analyze safely" Command="{Binding ScanCommand}" Background="{StaticResource EvidenceBrush}"/>
+          <Button Content="_Cancel" Command="{Binding CancelCommand}" Margin="0,8,8,0"/>
+        </StackPanel>
+        <StackPanel DockPanel.Dock="Bottom">
+          <TextBlock Text="VirusTotal API key — session only" Foreground="White" FontWeight="SemiBold"/>
+          <PasswordBox x:Name="VirusTotalKey" PasswordChanged="OnVirusTotalPasswordChanged"
+                       AutomationProperties.Name="VirusTotal API key, held in memory for this session"
+                       Margin="0,6,0,8"/>
+          <Button Content="Check _hash only" Command="{Binding LookupHashCommand}"/>
+          <TextBlock Text="The key is never saved and never reaches the worker."
+                     Foreground="#DCE5EC" TextWrapping="Wrap" Margin="0,8,0,0"/>
+        </StackPanel>
+      </DockPanel>
+    </Border>
+
+    <Border Grid.Column="1" Background="{StaticResource EvidenceBrush}"/>
+
+    <Grid Grid.Column="2" Margin="28,22">
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="*"/>
+      </Grid.RowDefinitions>
+      <StackPanel>
+        <TextBlock Text="{Binding StatusMessage}" FontSize="17" FontWeight="SemiBold"
+                   AutomationProperties.LiveSetting="Polite" AutomationProperties.Name="Analysis status"/>
+        <UniformGrid Columns="3" Rows="2" Margin="0,16,0,14">
+          <StackPanel><TextBlock Text="ANALYSIS" FontSize="10" FontWeight="Bold"/><TextBlock Text="{Binding AnalysisStatus}"/></StackPanel>
+          <StackPanel><TextBlock Text="COMPLETENESS" FontSize="10" FontWeight="Bold"/><TextBlock Text="{Binding Completeness}"/></StackPanel>
+          <StackPanel><TextBlock Text="DISPOSITION" FontSize="10" FontWeight="Bold"/><TextBlock Text="{Binding RiskDisposition, TargetNullValue=Withheld}"/></StackPanel>
+          <StackPanel><TextBlock Text="SHA-256" FontSize="10" FontWeight="Bold"/><TextBlock Text="{Binding Sha256}" FontFamily="Cascadia Mono" TextTrimming="CharacterEllipsis"/></StackPanel>
+          <StackPanel><TextBlock Text="SIGNER STATE" FontSize="10" FontWeight="Bold"/><TextBlock Text="{Binding SignerState}" TextTrimming="CharacterEllipsis"/></StackPanel>
+          <StackPanel><TextBlock Text="STRONGEST EVIDENCE" FontSize="10" FontWeight="Bold"/><TextBlock Text="{Binding StrongestEvidence}"/></StackPanel>
+        </UniformGrid>
+      </StackPanel>
+
+      <Border Grid.Row="1" Background="#FFF4DF" BorderBrush="{StaticResource EvidenceBrush}"
+              BorderThickness="1" Padding="12" Margin="0,0,0,14">
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Left">
+            <TextBlock Text="Optional external reputation" FontWeight="Bold"/>
+            <TextBlock Text="{Binding Reputation.Message}" TextWrapping="Wrap"/>
+            <TextBlock>
+              <Run Text="Malicious "/><Run Text="{Binding Reputation.Malicious}"/>
+              <Run Text=" · Suspicious "/><Run Text="{Binding Reputation.Suspicious}"/>
+              <Run Text=" · Harmless "/><Run Text="{Binding Reputation.Harmless}"/>
+              <Run Text=" · Undetected "/><Run Text="{Binding Reputation.Undetected}"/>
+            </TextBlock>
+          </StackPanel>
+          <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+            <CheckBox Content="Full evidence export" IsChecked="{Binding UseFullEvidence}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+            <Button Content="Export _HTML" Command="{Binding ExportHtmlCommand}"/>
+            <Button Content="Export _JSON" Command="{Binding ExportJsonCommand}"/>
+          </StackPanel>
+        </DockPanel>
+      </Border>
+
+      <ListBox Grid.Row="2" ItemsSource="{Binding CapabilityCards}" Background="Transparent"
+               BorderThickness="0" ScrollViewer.CanContentScroll="True"
+               VirtualizingPanel.IsVirtualizing="True"
+               VirtualizingPanel.VirtualizationMode="Recycling"
+               AutomationProperties.Name="Capability findings">
+        <ListBox.ItemsPanel>
+          <ItemsPanelTemplate><VirtualizingStackPanel/></ItemsPanelTemplate>
+        </ListBox.ItemsPanel>
+        <ListBox.ItemTemplate>
+          <DataTemplate><views:CapabilityCard/></DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+    </Grid>
+  </Grid>
+</Window>
