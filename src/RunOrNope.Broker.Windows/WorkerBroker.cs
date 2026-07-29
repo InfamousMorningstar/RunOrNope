@@ -6,14 +6,21 @@ using System.Security.Cryptography;
 using System.Security.Principal;
 using Microsoft.Win32.SafeHandles;
 using RunOrNope.Contracts;
+using RunOrNope.Intake;
 using RunOrNope.Worker;
 
 namespace RunOrNope.Broker.Windows;
 
 public interface IWorkerBroker
 {
+    /// <summary>
+    /// Analyses the sample the lease already opened and validated. Taking the lease rather
+    /// than a raw handle keeps the single-handle chain intact end to end: the caller never
+    /// holds the handle, and nothing reopens the sample by path between validation and
+    /// analysis. The lease is borrowed, never disposed — the caller owns it.
+    /// </summary>
     Task<ScanResult> AnalyzeAsync(
-        SafeFileHandle sampleHandle, ScanRequest request, CancellationToken cancellationToken);
+        SafeFileLease sample, ScanRequest request, CancellationToken cancellationToken);
 }
 
 public sealed class WorkerBroker : IWorkerBroker
@@ -68,6 +75,34 @@ public sealed class WorkerBroker : IWorkerBroker
     }
 
     public async Task<ScanResult> AnalyzeAsync(
+        SafeFileLease sample, ScanRequest request, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(sample);
+
+        // Borrowed at the point of use, never cached. The reference count is held for the
+        // whole analysis so that a caller disposing the lease concurrently — a cancellation
+        // racing an in-flight scan — defers the OS close instead of pulling the handle out
+        // from under a running worker launch. Disposal still wins: the lease drops its own
+        // reference, so the handle closes as soon as this call returns.
+        var handle = sample.BorrowHandle();
+        var referenceHeld = false;
+        try
+        {
+            handle.DangerousAddRef(ref referenceHeld);
+            return await AnalyzeAsync(handle, request, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (referenceHeld) handle.DangerousRelease();
+        }
+    }
+
+    /// <summary>
+    /// Raw-handle entry point. Internal on purpose: it is the isolation tests' seam, not an
+    /// application boundary, because a caller holding the handle can close it out from
+    /// under the lease that owns it.
+    /// </summary>
+    internal async Task<ScanResult> AnalyzeAsync(
         SafeFileHandle sampleHandle, ScanRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(sampleHandle);
