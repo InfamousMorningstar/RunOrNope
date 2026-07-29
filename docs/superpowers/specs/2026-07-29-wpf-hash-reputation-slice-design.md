@@ -1,7 +1,7 @@
 # WPF Experience and Hash Reputation Slice — Design
 
 **Date:** July 29, 2026
-**Status:** Proposed for written-spec review
+**Status:** Approved with shared precursor landed
 **Parent design:** `docs/superpowers/specs/2026-07-24-run-or-nope-design.md`
 **Plan task:** Task 10 — WPF User Experience and Explicit Hash Reputation
 **Builds on:** `docs/superpowers/specs/2026-07-29-safe-reporting-slice-design.md`
@@ -42,18 +42,18 @@ Out of scope:
 - Worker package signing and portable distribution, which land in Task 12.
 - Automatic update checks, telemetry, report preview, or shell-opening exports.
 
-## 3. Required shared precursor: preserve the single-handle chain
+## 3. Landed shared precursor: preserve the single-handle chain
 
-The current public APIs cannot be composed safely by the App:
+Before commit `b0daf7a`, the public APIs could not be composed safely by the App:
 
 - `SafeFileIntake.OpenAsync` returns a `SafeFileLease` that correctly owns the only
   validated, stable handle.
-- `IWorkerBroker.AnalyzeAsync` accepts a raw `SafeFileHandle`.
+- `IWorkerBroker.AnalyzeAsync` accepted a raw `SafeFileHandle`.
 - `SafeFileLease` intentionally exposes no public handle.
 
 The App must not reopen the path after intake, and reflection or a public handle
-property would weaken ownership. Before Task 10 implementation, land this minimal
-shared change on `feature/initial-build` as its own agreed commit:
+property would weaken ownership. Commit `b0daf7a` landed this minimal shared change
+on `feature/initial-build`:
 
 ```csharp
 // RunOrNope.Intake — internal, not visible to the App
@@ -72,11 +72,19 @@ public interface IWorkerBroker
 }
 ```
 
+Broker.Windows already referenced Intake, so the change added no project
+dependency. Broker.Windows also already had
+`InternalsVisibleTo("RunOrNope.SecurityTests")`; demoting the raw-handle overload to
+internal therefore preserves the existing 45-test isolation seam without making it
+an application boundary.
+
 `WorkerBroker` borrows the handle only for the awaited call and does not dispose it.
-The App owns and disposes the lease after analysis. The existing raw-handle entry
-point becomes an internal implementation method used by security tests, not a
-public application boundary. Tests prove a disposed lease fails closed and the
-broker receives the exact intake-owned handle without reopening the sample.
+It holds `SafeHandle.DangerousAddRef` across the borrow so cancellation-driven
+caller disposal cannot close the OS handle underneath an in-flight worker. The App
+owns and disposes the lease after analysis. The raw-handle entry point is now an
+internal implementation method used by security tests. Tests prove a disposed lease
+fails closed and the broker receives the exact intake-owned handle without reopening
+the sample.
 
 **Superseded:** exposing `SafeFileLease.Handle` publicly was rejected because any UI
 consumer could close, retain, or misuse the ownership-bearing handle. Adding a
@@ -84,8 +92,20 @@ path-taking broker overload was rejected because reopening by path destroys the
 single-handle tamper guarantee. Making App a friend of Intake was rejected because
 hostile-file primitives do not belong in the presentation assembly.
 
-This is the only cross-lane code required by Task 10. It must be agreed and landed
-on the integration branch before delivery-lane implementation begins.
+This precursor is complete and must not be re-implemented in the delivery lane.
+
+### 3.1 Known real-path blocker
+
+An end-to-end scan through an intake-opened handle currently causes the worker to
+write a truncated response frame; the broker correctly maps that protocol failure
+to `IsolationUnavailable`. It also reproduces through the internal raw-handle path,
+so it predates the lease-taking precursor. The skipped
+`HandleChainTests.Analysis_DoesNotDisposeTheCallersLease` records the blocker.
+
+Task 10 builds `ScanCoordinator` against `IWorkerBroker` and verifies orchestration
+with a fake broker. It does not modify or duplicate broker/worker launch-path work.
+The parsing lane owns the pre-existing fix. Until that separate fix lands, Task 10
+must not claim that real packaged-worker end-to-end scanning succeeds.
 
 ## 4. Application architecture
 
@@ -474,6 +494,8 @@ or resolve sample-controlled network names.
   path.
 - The App cannot access the borrowed handle API at compile time.
 - A disposed lease fails before worker launch.
+- Disposal racing an in-flight analysis leaves the borrowed OS handle valid until
+  the broker releases its `DangerousAddRef`, after which lease disposal closes it.
 - Success, intake failure, broker failure, and cancellation dispose the lease once.
 - The scan request sent to the worker contains an empty path and selected mode.
 
@@ -590,7 +612,7 @@ Delivery-lane files:
 - `tests/RunOrNope.UnitTests/App/*.cs`
 - `tests/RunOrNope.IntegrationTests/App/ScanWorkflowTests.cs`
 
-Required shared precursor, proposed separately:
+Landed shared precursor (`b0daf7a`; do not edit in Task 10):
 
 - `src/RunOrNope.Intake/SafeFileIntake.cs`
 - `src/RunOrNope.Intake/Properties/AssemblyInfo.cs`
