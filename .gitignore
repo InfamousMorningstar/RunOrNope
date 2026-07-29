@@ -9,3 +9,11 @@ artifacts/
 
 # Private samples must never enter source control.
 SlydenSetupV2.exe
+
+# Agent tooling and working notes. Kept locally, deliberately not published.
+.claude/
+.superpowers/
+.remember/
+AGENTS.md
+CLAUDE.md
+docs/superpowers/

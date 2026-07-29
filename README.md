@@ -6,9 +6,11 @@ promise is simple: submitted samples are **never executed** and **never
 uploaded** during local analysis.
 
 > ⚠️ **Work in progress — not a finished product.** RunOrNope is under active
-> development. The fail-closed isolation core and the PE/CLR analyzer exist and are
-> tested, but the end-to-end scan, capability rules, YARA-X, and the UI are not
-> finished. Nothing here is production-ready, and **no security claim should be
+> development. Most of the pipeline now exists and is tested — isolation, PE/CLR
+> analysis, capability rules, nested-artifact discovery, reporting, and the desktop
+> UI — but **a known defect stops a real scan from completing end to end** (see
+> [Current status](#current-status)), and MSI analysis, YARA-X, packaging, and CI are
+> unimplemented. Nothing here is production-ready, and **no security claim should be
 > relied upon yet.**
 
 ## What a report looks like (illustrative)
@@ -64,9 +66,9 @@ did and did not find, and always shows how complete the analysis was.
 
 ## Current status
 
-An implementation checkpoint — **not yet a usable scanner**. The security-critical
-building blocks are in place and tested; the analyzers and UI are not wired into an
-end-to-end scan yet.
+An implementation checkpoint — **not yet a usable scanner**. Most components are
+built and tested (317 tests: 253 unit, 57 security, 7 integration), but a real scan
+does not yet complete. See [Known blocking defect](#known-blocking-defect).
 
 Done so far:
 
@@ -81,13 +83,44 @@ Done so far:
   failure returns `IsolationUnavailable` with no ordinary-process fallback. A live
   security suite (using a generated probe, never malware) checks network, child-process,
   traversal, reparse, resource-limit, and handle denials.
-- First PE/CLR analyzer slice: independent bounds-checked PE parsing cross-checked
-  against AsmResolver, managed metadata read without loading the assembly, and
-  cache-only, noninteractive Authenticode trust (offline revocation stays
-  indeterminate, never "valid").
+- PE/CLR analysis: independent bounds-checked PE parsing cross-checked against
+  AsmResolver, managed metadata read without loading the assembly, and cache-only,
+  noninteractive Authenticode trust (offline revocation stays indeterminate, never
+  "valid"). Parser faults are contained at the worker boundary and become
+  incompleteness, never a crash or a favorable result.
+- Capability rules: nine curated rules matching imports and P/Invokes into
+  evidence-cited findings. Import presence is not treated as proof of use, so
+  findings are capped at structural evidence with `Referenced` reachability, and
+  ubiquitous patterns (debugger checks, dynamic API resolution, socket use) are
+  tiered down so they read as context rather than accusation. An image whose imports
+  cannot be read is forced incomplete — a packed sample that hid its import table
+  withholds a verdict instead of scoring as the cleanest result available.
+- Bounded nested-artifact discovery: a SHA-256-keyed artifact graph with an
+  extraction budget (depth, count, total and per-artifact bytes, entries per
+  container, expansion ratio) and an archive path policy covering traversal, rooted
+  and UNC paths, reserved device names, alternate data streams, and control
+  characters. Deduplicated entries are still charged to the budget, so repeating one
+  payload buys no free expansion.
+- Reports: deterministic JSON and self-contained, script-free HTML under a
+  restrictive CSP, with every evidence tier preserved, credential-shaped strings
+  redacted by default, and an explicit full-evidence mode behind a privacy warning.
+- Desktop workflow: a WPF shell with browse/drag-drop intake, Quick/Deep modes,
+  cancellation, capability cards that preserve evidence tiers, report export, and an
+  explicit SHA-256-only VirusTotal lookup (confirmed per request, redirects denied,
+  memory-only session key, and never an input to the verdict).
 
-Not done yet: MSI, nested-content, and capability analyzers; YARA-X; the end-to-end
-scan; and the WPF UI. **No security claim should be inferred from this scaffold.**
+### Known blocking defect
+
+A worker launched against an intake-opened handle writes a truncated response frame,
+so the broker fails closed to `IsolationUnavailable` and a real scan cannot complete.
+It reproduces through the broker's raw-handle entry point too, so it is not caused by
+the desktop workflow — it simply had not been exercised until intake and broker were
+first composed. Every component is tested independently and the failure is fail-closed
+(no favorable result is produced), but until this is fixed RunOrNope cannot scan a
+file. A skipped security test carries the reproducer.
+
+Not done yet: MSI analysis, string extraction, ASAR/JAR readers, YARA-X, packaging,
+and CI. **No security claim should be inferred from this checkpoint.**
 
 ## Planned supported root formats
 
@@ -175,18 +208,30 @@ changing dependencies, regenerate lock files explicitly and review their diff:
 
 ## Privacy and safety model
 
-Local analysis has no network feature and must not execute, load,
-install, repair, shell-open, preview, or resolve sample-controlled content.
-No file upload is planned. A future, separate VirusTotal action may disclose
-only the SHA-256 hash after explicit confirmation; it will never upload a
-sample. Reports may contain sensitive extracted evidence and will require clear
-privacy controls.
+Local analysis has no network feature and must not execute, load, install, repair,
+shell-open, preview, or resolve sample-controlled content. No file upload is planned
+or implemented.
+
+The VirusTotal action is implemented as a separate, explicitly confirmed lookup that
+discloses only the SHA-256. Each request shows the exact hash and destination before
+anything is sent, redirects are refused, the response is size-bounded, and the API key
+is held in memory for the session only — never written to disk, a report, a log, or an
+exception. Its result is displayed in its own panel and is not an input to the static
+verdict: a clean or missing reputation result never improves a disposition.
+
+Reports redact credential-shaped strings by default; full evidence is available behind
+an explicit privacy warning.
 
 ## Current limitations
 
-- PE/CLR analysis is an isolated component but is not yet wired through the
-  worker protocol or user interface. MSI, nested-content, and capability
-  analyzers are not implemented.
+- A real scan cannot complete: see [Known blocking defect](#known-blocking-defect).
+- MSI analysis is not implemented, so `.msi` inputs are rejected as unsupported.
+- Nested-artifact discovery has the graph, budget, and path policy but no container
+  readers yet, so nothing is actually unpacked. String extraction is not implemented.
+- Capability rules cover imports and P/Invokes only. There is no data-flow analysis,
+  so no finding can reach "confirmed static implementation", and by design that caps
+  every verdict below high risk.
+- YARA-X is not integrated.
 - The current Authenticode result covers Windows' primary embedded-signature
   policy result and structurally counts certificate records. Full signer,
   timestamp, secondary-signature, and catalog enumeration remains unfinished.
@@ -198,13 +243,18 @@ privacy controls.
 
 ## Roadmap
 
-1. Immutable, bounded evidence and verdict contracts.
-2. Single-handle intake with identity and mutation checks.
-3. Fail-closed AppContainer and Job Object worker isolation.
-4. Read-only PE/CLR, MSI, and bounded nested-content analysis.
-5. Evidence-backed capability rules and YARA-X integration.
-6. Script-free JSON/HTML reporting with privacy controls.
-7. WPF workflow, accessibility, packaging, CI, and security documentation.
+1. ✅ Immutable, bounded evidence and verdict contracts.
+2. ✅ Single-handle intake with identity and mutation checks.
+3. ✅ Fail-closed AppContainer and Job Object worker isolation.
+4. ⏳ Read-only analysis — PE/CLR done; the nested-content graph and budget are done
+   but have no container readers; MSI not started.
+5. ⏳ Evidence-backed capability rules — import and P/Invoke rules done; YARA-X and
+   data-flow-backed evidence not started.
+6. ✅ Script-free JSON/HTML reporting with privacy controls.
+7. ⏳ WPF workflow and accessibility done; packaging, CI, and security documentation
+   not started.
+8. ⬜ Fix the worker-truncation defect so a scan completes end to end, then validate
+   against the release-gating OS matrix.
 
 ## License
 
