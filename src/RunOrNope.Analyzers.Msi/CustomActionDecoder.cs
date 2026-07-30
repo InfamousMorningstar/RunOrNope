@@ -178,11 +178,13 @@ public static class CustomActionReachability
             && decoded.NoImpersonation
             && uiDependent
             && !executeSequencePresence;
+        var hasUnsupportedSemantics = decoded.UnknownBits != 0
+            || decoded.BaseKind == CustomActionBaseKind.Unknown;
 
         return new CustomActionReachabilityResult(
             potentialElevation,
             uiDependent,
             inconsistentDeferredScheduling,
-            decoded.HideTarget || inconsistentDeferredScheduling);
+            decoded.HideTarget || inconsistentDeferredScheduling || hasUnsupportedSemantics);
     }
 }

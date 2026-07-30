@@ -87,6 +87,34 @@ public sealed class CustomActionReachabilityTests
     }
 
     [Fact]
+    public void Correlate_treats_unknown_high_type_bits_as_an_evidence_gap()
+    {
+        var decoded = CustomActionDecoder.Decode(2 | 0x10000000);
+
+        var result = CustomActionReachability.Correlate(Invocation(decoded));
+
+        decoded.BaseKind.Should().Be(CustomActionBaseKind.BinaryExe);
+        decoded.UnknownBits.Should().Be(0x10000000);
+        result.PotentialElevation.Should().BeFalse();
+        result.UiDependent.Should().BeFalse();
+        result.Incomplete.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Correlate_treats_an_undocumented_low_six_bit_base_kind_as_an_evidence_gap()
+    {
+        var decoded = CustomActionDecoder.Decode(3);
+
+        var result = CustomActionReachability.Correlate(Invocation(decoded));
+
+        decoded.BaseKind.Should().Be(CustomActionBaseKind.Unknown);
+        decoded.UnknownBits.Should().Be(0);
+        result.PotentialElevation.Should().BeFalse();
+        result.UiDependent.Should().BeFalse();
+        result.Incomplete.Should().BeTrue();
+    }
+
+    [Fact]
     public void Correlate_is_safe_for_default_immutable_arrays_and_an_empty_action_name()
     {
         var invocation = new CustomActionInvocation(
