@@ -241,7 +241,11 @@ public static class ArtifactGraphBuilder
     {
         try
         {
-            return provider.Read(content);
+            var result = provider.Read(content);
+            // An unrecognized byte sequence is an ordinary leaf. It cannot contribute
+            // parser facts, entries, or an incomplete state even if a provider returns
+            // a malformed public result object alongside IsRecognized = false.
+            return result.IsRecognized ? result : ContainerReadResult.NotRecognized;
         }
         catch (IOException)
         {

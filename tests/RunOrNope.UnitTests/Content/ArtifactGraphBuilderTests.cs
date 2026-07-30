@@ -220,6 +220,39 @@ public sealed class ArtifactGraphBuilderTests
     }
 
     [Fact]
+    public void Build_UnrecognizedResultWithPayload_IsNormalizedToAnOrdinaryLeaf()
+    {
+        var hiddenPayload = Leaf("unrecognized-hidden-payload");
+        var child = Leaf("unrecognized-child");
+        var root = Leaf("unrecognized-root");
+        var unrecognized = new ContainerReadResult(
+            false,
+            ArtifactCompleteness.Malformed,
+            ImmutableArray.Create(Entry("../../../hidden.dll", hiddenPayload)),
+            ImmutableArray.Create(new ArtifactObservationFact(
+                "container.malformed", "This fact must be ignored for unrecognized bytes.",
+                ParserConfidence.High)));
+        var rawRootProvider = new TestContainerProvider().Register(root, unrecognized);
+        var nestedProvider = new TestContainerProvider()
+            .Register(root, Entry("child.bin", child))
+            .Register(child, unrecognized);
+
+        var rawRootGraph = Build(root, rawRootProvider);
+        var nestedGraph = Build(root, nestedProvider);
+
+        rawRootGraph.Artifacts.Should().ContainSingle();
+        rawRootGraph.Artifacts[0].Completeness.Should().Be(ArtifactCompleteness.Complete);
+        rawRootGraph.Incomplete.Should().BeFalse();
+        rawRootGraph.Observations.Should().BeEmpty();
+        nestedGraph.Artifacts.Should().HaveCount(2);
+        nestedGraph.Artifacts.Should().AllSatisfy(artifact =>
+            artifact.Completeness.Should().Be(ArtifactCompleteness.Complete));
+        nestedGraph.Incomplete.Should().BeFalse();
+        nestedGraph.Observations.Should().NotContain(observation =>
+            observation.Kind == "container.malformed" || observation.Kind == "artifact.hostile-name");
+    }
+
+    [Fact]
     public void Build_RootContainerInput_PreservesRecognizedMalformedCompleteness()
     {
         var root = new RootContainerInput(
