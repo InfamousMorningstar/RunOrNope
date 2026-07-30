@@ -1,6 +1,8 @@
+using System.Collections.Immutable;
 using System.Security.Cryptography;
 using System.Text;
 using RunOrNope.Analyzers.Content;
+using RunOrNope.Contracts;
 
 namespace RunOrNope.UnitTests.Content;
 
@@ -11,7 +13,7 @@ namespace RunOrNope.UnitTests.Content;
 /// </summary>
 internal sealed class TestContainerProvider : IContainerProvider
 {
-    private readonly Dictionary<string, List<ContainerEntry>> containers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ContainerReadResult> containers = new(StringComparer.OrdinalIgnoreCase);
 
     public static byte[] Leaf(string text) => Encoding.UTF8.GetBytes(text);
 
@@ -20,7 +22,17 @@ internal sealed class TestContainerProvider : IContainerProvider
     /// <summary>Declares <paramref name="content"/> to be a container holding <paramref name="entries"/>.</summary>
     public TestContainerProvider Register(byte[] content, params ContainerEntry[] entries)
     {
-        containers[Sha(content)] = [.. entries];
+        containers[Sha(content)] = ContainerReadResult.Recognized(
+            ArtifactCompleteness.Complete,
+            [.. entries],
+            ImmutableArray<ArtifactObservationFact>.Empty);
+        return this;
+    }
+
+    /// <summary>Declares a recognized result whose completeness must survive graph construction.</summary>
+    public TestContainerProvider Register(byte[] content, ContainerReadResult result)
+    {
+        containers[Sha(content)] = result;
         return this;
     }
 
@@ -36,8 +48,8 @@ internal sealed class TestContainerProvider : IContainerProvider
     public static ContainerEntry Endless(string name, long declaredSize, long totalBytes, long compressedSize = 0) =>
         new(name, declaredSize, compressedSize, () => new ZeroStream(totalBytes));
 
-    public IEnumerable<ContainerEntry>? TryEnumerate(ReadOnlyMemory<byte> content) =>
-        containers.TryGetValue(Sha(content.Span), out var entries) ? entries : null;
+    public ContainerReadResult Read(ReadOnlyMemory<byte> content) =>
+        containers.TryGetValue(Sha(content.Span), out var result) ? result : ContainerReadResult.NotRecognized;
 
     /// <summary>Produces bytes on demand, so a "4 GiB" entry costs nothing to describe.</summary>
     private sealed class ZeroStream(long length) : Stream

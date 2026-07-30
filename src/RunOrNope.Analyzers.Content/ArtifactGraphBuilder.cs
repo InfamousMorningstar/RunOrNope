@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Collections.Immutable;
 using System.Globalization;
+using System.IO;
 using System.Security.Cryptography;
 using RunOrNope.Contracts;
 
@@ -21,7 +22,14 @@ namespace RunOrNope.Analyzers.Content;
 public static class ArtifactGraphBuilder
 {
     private const int ReadChunkBytes = 64 * 1024;
+    private const string UnavailableDescription =
+        "The container or one of its entries could not be read; content beyond the failure was not examined.";
 
+    /// <summary>
+    /// Compatibility adapter for callers that begin with raw root bytes. The root is
+    /// initially complete, then receives the provider's single read result before the
+    /// graph walk begins.
+    /// </summary>
     public static ArtifactGraph Build(
         ReadOnlyMemory<byte> rootContent,
         string rootSha256,
@@ -30,49 +38,78 @@ public static class ArtifactGraphBuilder
     {
         ArgumentNullException.ThrowIfNull(rootSha256);
         ArgumentNullException.ThrowIfNull(provider);
-        budget ??= new ExtractionBudget();
-
-        var artifacts = new List<ArtifactNode>();
-        var observations = ImmutableArray.CreateBuilder<Observation>();
-        var sequences = new Dictionary<string, int>(StringComparer.Ordinal);
-
-        // SHA-256 -> index into `artifacts`, the deduplication and cycle guard in one.
-        var bySha = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
         var root = new ArtifactNode(
             ScanArtifacts.RootId, string.Empty, rootSha256, rootContent.Length,
             ArtifactCompleteness.Complete, ImmutableArray<string>.Empty);
-        artifacts.Add(root);
-        bySha[rootSha256] = 0;
-        budget.ChargeArtifact();
+        var read = ReadContainer(provider, rootContent);
+        var rootInput = new RootContainerInput(
+            root with { Completeness = read.Completeness },
+            read.Entries,
+            read.Observations);
 
-        var queue = new Queue<(int Index, ReadOnlyMemory<byte> Content, int Depth)>();
-        queue.Enqueue((0, rootContent, 0));
+        return Build(rootInput, provider, budget);
+    }
+
+    public static ArtifactGraph Build(
+        RootContainerInput rootInput,
+        IContainerProvider provider,
+        ExtractionBudget? budget = null)
+    {
+        ArgumentNullException.ThrowIfNull(rootInput);
+        ArgumentNullException.ThrowIfNull(rootInput.Root);
+        ArgumentNullException.ThrowIfNull(provider);
+        budget ??= new ExtractionBudget();
+
+        var artifacts = new List<ArtifactNode> { rootInput.Root };
+        var observations = ImmutableArray.CreateBuilder<Observation>();
+        var sequences = new Dictionary<string, int>(StringComparer.Ordinal);
+        var bySha = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+        {
+            [rootInput.Root.Sha256] = 0,
+        };
+        var byId = new Dictionary<string, int>(StringComparer.Ordinal)
+        {
+            [rootInput.Root.Id] = 0,
+        };
+        AddFacts(observations, sequences, rootInput.Root.Id, rootInput.Observations);
+
+        if (!budget.ChargeArtifact())
+        {
+            MergeCompletenessAndPropagate(
+                artifacts, byId, 0, ArtifactCompleteness.TruncatedByPolicy);
+            AddTruncation(observations, sequences, rootInput.Root.Id, budget, BudgetLimit.Artifacts);
+            return new ArtifactGraph([.. artifacts], observations.ToImmutable(), true);
+        }
+
+        var queue = new Queue<(int Index, ImmutableArray<ContainerEntry> Entries, int Depth)>();
+        if (!rootInput.Entries.IsDefaultOrEmpty)
+            queue.Enqueue((0, rootInput.Entries, 0));
 
         while (queue.Count > 0)
         {
-            var (containerIndex, content, depth) = queue.Dequeue();
+            var (containerIndex, entries, depth) = queue.Dequeue();
             var containerId = artifacts[containerIndex].Id;
 
             if (budget.Exhausted)
             {
-                MarkTruncated(artifacts, containerIndex);
+                MergeCompletenessAndPropagate(
+                    artifacts, byId, containerIndex, ArtifactCompleteness.TruncatedByPolicy);
+                AddTruncation(observations, sequences, containerId, budget, null);
                 continue;
             }
 
-            var entries = provider.TryEnumerate(content);
-            if (entries is null) continue;
-
             if (!budget.AllowsDepth(depth + 1))
             {
-                MarkTruncated(artifacts, containerIndex);
+                MergeCompletenessAndPropagate(
+                    artifacts, byId, containerIndex, ArtifactCompleteness.TruncatedByPolicy);
                 AddTruncation(observations, sequences, containerId, budget, BudgetLimit.Depth);
                 continue;
             }
 
             WalkContainer(
                 entries, containerIndex, containerId, depth,
-                artifacts, observations, sequences, bySha, queue, budget, provider);
+                artifacts, observations, sequences, bySha, byId, queue, budget, provider);
         }
 
         var incomplete = budget.Exhausted
@@ -82,7 +119,7 @@ public static class ArtifactGraphBuilder
     }
 
     private static void WalkContainer(
-        IEnumerable<ContainerEntry> entries,
+        ImmutableArray<ContainerEntry> entries,
         int containerIndex,
         string containerId,
         int depth,
@@ -90,7 +127,8 @@ public static class ArtifactGraphBuilder
         ImmutableArray<Observation>.Builder observations,
         Dictionary<string, int> sequences,
         Dictionary<string, int> bySha,
-        Queue<(int, ReadOnlyMemory<byte>, int)> queue,
+        Dictionary<string, int> byId,
+        Queue<(int Index, ImmutableArray<ContainerEntry> Entries, int Depth)> queue,
         ExtractionBudget budget,
         IContainerProvider provider)
     {
@@ -105,7 +143,8 @@ public static class ArtifactGraphBuilder
 
             if (!budget.ChargeEntry(entryIndex++))
             {
-                MarkTruncated(artifacts, containerIndex);
+                MergeCompletenessAndPropagate(
+                    artifacts, byId, containerIndex, ArtifactCompleteness.TruncatedByPolicy);
                 AddTruncation(observations, sequences, containerId, budget, BudgetLimit.EntriesPerContainer);
                 return;
             }
@@ -127,7 +166,14 @@ public static class ArtifactGraphBuilder
                     ParserConfidence.High);
             }
 
-            var (bytes, truncated) = ReadBounded(entry, budget);
+            if (!TryReadBounded(entry, budget, out var bytes, out var truncated))
+            {
+                MergeCompletenessAndPropagate(
+                    artifacts, byId, containerIndex, ArtifactCompleteness.Unavailable);
+                AddUnavailable(observations, sequences, containerId);
+                return;
+            }
+
             if (entry.DeclaredSize >= 0 && entry.DeclaredSize != bytes.Length && !truncated)
             {
                 Add(observations, sequences, containerId, "artifact.size-mismatch",
@@ -143,6 +189,8 @@ public static class ArtifactGraphBuilder
                 // Same bytes, another path: one node, an extra parent edge. This is also
                 // what terminates a container that embeds itself.
                 artifacts[existing] = AddParent(artifacts[existing], containerId);
+                MergeCompletenessAndPropagate(
+                    artifacts, byId, containerIndex, artifacts[existing].Completeness);
                 Add(observations, sequences, containerId, "artifact.duplicate",
                     $"Entry '{verdict.DisplayName}' has content already seen as " +
                     $"'{artifacts[existing].Id}'; it is recorded once with both parents.",
@@ -152,7 +200,8 @@ public static class ArtifactGraphBuilder
 
             if (!budget.ChargeArtifact())
             {
-                MarkTruncated(artifacts, containerIndex);
+                MergeCompletenessAndPropagate(
+                    artifacts, byId, containerIndex, ArtifactCompleteness.TruncatedByPolicy);
                 AddTruncation(observations, sequences, containerId, budget, BudgetLimit.Artifacts);
                 return;
             }
@@ -165,6 +214,7 @@ public static class ArtifactGraphBuilder
 
             artifacts.Add(node);
             bySha[sha] = artifacts.Count - 1;
+            byId[id] = artifacts.Count - 1;
 
             Add(observations, sequences, containerId, "artifact.nested",
                 $"Contains '{verdict.DisplayName}' ({bytes.Length} bytes, {id}).",
@@ -172,24 +222,86 @@ public static class ArtifactGraphBuilder
 
             if (truncated)
             {
-                // The budget is spent. Grinding through the container's remaining entries
-                // would burn time to produce nothing but more truncated stubs.
-                MarkTruncated(artifacts, containerIndex);
+                MergeCompletenessAndPropagate(
+                    artifacts, byId, containerIndex, ArtifactCompleteness.TruncatedByPolicy);
                 AddTruncation(observations, sequences, containerId, budget, null);
                 return;
             }
 
-            // Only recurse into content the provider recognises; everything else is a leaf.
-            if (provider.TryEnumerate(bytes) is not null)
-                queue.Enqueue((artifacts.Count - 1, bytes, depth + 1));
+            var read = ReadContainer(provider, bytes);
+            AddFacts(observations, sequences, id, read.Observations);
+            MergeCompletenessAndPropagate(artifacts, byId, artifacts.Count - 1, read.Completeness);
+
+            if (read.IsRecognized)
+                queue.Enqueue((artifacts.Count - 1, read.Entries, depth + 1));
         }
     }
+
+    private static ContainerReadResult ReadContainer(IContainerProvider provider, ReadOnlyMemory<byte> content)
+    {
+        try
+        {
+            return provider.Read(content);
+        }
+        catch (IOException)
+        {
+            return UnavailableResult();
+        }
+        catch (InvalidDataException)
+        {
+            return UnavailableResult();
+        }
+        catch (OverflowException)
+        {
+            return UnavailableResult();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return UnavailableResult();
+        }
+    }
+
+    private static ContainerReadResult UnavailableResult() =>
+        ContainerReadResult.Recognized(
+            ArtifactCompleteness.Unavailable,
+            ImmutableArray<ContainerEntry>.Empty,
+            ImmutableArray.Create(new ArtifactObservationFact(
+                "artifact.unavailable", UnavailableDescription, ParserConfidence.High)));
 
     /// <summary>
     /// Reads an entry in chunks, charging the budget as bytes arrive. The declared size
     /// is never used to size a buffer: an entry claiming 4 GiB stops at a ceiling rather
     /// than at its own claim.
     /// </summary>
+    private static bool TryReadBounded(
+        ContainerEntry entry,
+        ExtractionBudget budget,
+        out byte[] bytes,
+        out bool truncated)
+    {
+        try
+        {
+            (bytes, truncated) = ReadBounded(entry, budget);
+            return true;
+        }
+        catch (IOException)
+        {
+        }
+        catch (InvalidDataException)
+        {
+        }
+        catch (OverflowException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+
+        bytes = [];
+        truncated = false;
+        return false;
+    }
+
     private static (byte[] Bytes, bool Truncated) ReadBounded(ContainerEntry entry, ExtractionBudget budget)
     {
         using var stream = entry.Open();
@@ -225,11 +337,64 @@ public static class ArtifactGraphBuilder
             ? node
             : node with { ParentIds = node.ParentIds.Add(parentId) };
 
-    private static void MarkTruncated(List<ArtifactNode> artifacts, int index)
+    private static void MergeCompletenessAndPropagate(
+        List<ArtifactNode> artifacts,
+        Dictionary<string, int> byId,
+        int index,
+        ArtifactCompleteness completeness)
     {
-        if (artifacts[index].Completeness == ArtifactCompleteness.Complete)
-            artifacts[index] = artifacts[index] with { Completeness = ArtifactCompleteness.TruncatedByPolicy };
+        var pending = new Queue<(int Index, ArtifactCompleteness Completeness)>();
+        pending.Enqueue((index, completeness));
+
+        while (pending.Count > 0)
+        {
+            var (currentIndex, incoming) = pending.Dequeue();
+            var current = artifacts[currentIndex];
+            var merged = MoreIncomplete(current.Completeness, incoming);
+            if (merged == current.Completeness) continue;
+
+            artifacts[currentIndex] = current with { Completeness = merged };
+            foreach (var parentId in current.ParentIds)
+            {
+                if (byId.TryGetValue(parentId, out var parentIndex))
+                    pending.Enqueue((parentIndex, merged));
+            }
+        }
     }
+
+    private static ArtifactCompleteness MoreIncomplete(
+        ArtifactCompleteness left,
+        ArtifactCompleteness right) =>
+        CompletenessRank(left) >= CompletenessRank(right) ? left : right;
+
+    private static int CompletenessRank(ArtifactCompleteness completeness) => completeness switch
+    {
+        ArtifactCompleteness.Complete => 0,
+        ArtifactCompleteness.TruncatedByPolicy => 1,
+        ArtifactCompleteness.Unsupported => 2,
+        ArtifactCompleteness.Encrypted => 3,
+        ArtifactCompleteness.Malformed => 4,
+        ArtifactCompleteness.Unavailable => 5,
+        _ => throw new ArgumentOutOfRangeException(nameof(completeness)),
+    };
+
+    private static void AddFacts(
+        ImmutableArray<Observation>.Builder observations,
+        Dictionary<string, int> sequences,
+        string artifactId,
+        ImmutableArray<ArtifactObservationFact> facts)
+    {
+        foreach (var fact in facts)
+            Add(observations, sequences, artifactId, fact.Kind, fact.Description,
+                fact.ParserConfidence, fact.Offset, fact.Region);
+    }
+
+    private static void AddUnavailable(
+        ImmutableArray<Observation>.Builder observations,
+        Dictionary<string, int> sequences,
+        string artifactId) =>
+        Add(observations, sequences, artifactId, "artifact.unavailable",
+            UnavailableDescription, ParserConfidence.High);
 
     private static void AddTruncation(
         ImmutableArray<Observation>.Builder observations,
@@ -253,12 +418,14 @@ public static class ArtifactGraphBuilder
         string artifactId,
         string kind,
         string description,
-        ParserConfidence confidence)
+        ParserConfidence confidence,
+        long? offset = null,
+        string? region = null)
     {
         sequences.TryGetValue(artifactId, out var sequence);
         sequences[artifactId] = ++sequence;
         var id = artifactId + "-obs-" + sequence.ToString("D4", CultureInfo.InvariantCulture);
         observations.Add(new Observation(
-            id, kind, description, confidence, new SourceLocation(artifactId, null, null)));
+            id, kind, description, confidence, new SourceLocation(artifactId, offset, region)));
     }
 }

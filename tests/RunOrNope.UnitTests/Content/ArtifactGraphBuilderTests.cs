@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+using System.IO;
 using AwesomeAssertions;
 using RunOrNope.Analyzers.Content;
 using RunOrNope.Contracts;
@@ -203,6 +205,82 @@ public sealed class ArtifactGraphBuilderTests
 
         graph.Incomplete.Should().BeFalse();
         verdict.RiskDisposition.Should().Be(RiskDisposition.FewMaterialStaticConcerns);
+    }
+
+    [Fact]
+    public void Build_NotRecognizedBytes_RemainAnOrdinaryCompleteLeaf()
+    {
+        var root = Leaf("ordinary-bytes");
+
+        var graph = Build(root, new TestContainerProvider());
+
+        graph.Artifacts.Should().ContainSingle();
+        graph.Artifacts[0].Completeness.Should().Be(ArtifactCompleteness.Complete);
+        graph.Incomplete.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Build_RootContainerInput_PreservesRecognizedMalformedCompleteness()
+    {
+        var root = new RootContainerInput(
+            new ArtifactNode("root", string.Empty, Sha(Leaf("malformed-root")), 0,
+                ArtifactCompleteness.Malformed, ImmutableArray<string>.Empty),
+            ImmutableArray<ContainerEntry>.Empty,
+            ImmutableArray.Create(new ArtifactObservationFact(
+                "container.malformed", "Recognized header; directory is unreadable.",
+                ParserConfidence.High)));
+
+        var graph = ArtifactGraphBuilder.Build(root, new TestContainerProvider());
+
+        graph.Incomplete.Should().BeTrue();
+        graph.Artifacts.Single().Completeness.Should().Be(ArtifactCompleteness.Malformed);
+        graph.Observations.Should().Contain(observation => observation.Kind == "container.malformed");
+    }
+
+    [Theory]
+    [InlineData(ArtifactCompleteness.Malformed)]
+    [InlineData(ArtifactCompleteness.Encrypted)]
+    [InlineData(ArtifactCompleteness.Unsupported)]
+    [InlineData(ArtifactCompleteness.TruncatedByPolicy)]
+    public void Build_RecognizedIncompleteNestedContainer_MarksTheArtifactAndParentIncomplete(
+        ArtifactCompleteness completeness)
+    {
+        var child = Leaf("recognized-incomplete-child");
+        var root = Leaf("recognized-incomplete-root");
+        var result = ContainerReadResult.Recognized(
+            completeness,
+            ImmutableArray<ContainerEntry>.Empty,
+            ImmutableArray.Create(new ArtifactObservationFact(
+                "container.incomplete", "Recognized container could not be completely inspected.",
+                ParserConfidence.High)));
+        var provider = new TestContainerProvider()
+            .Register(root, Entry("child.container", child))
+            .Register(child, result);
+
+        var graph = Build(root, provider);
+
+        graph.Incomplete.Should().BeTrue();
+        graph.Artifacts.Should().HaveCount(2);
+        graph.Artifacts.Should().AllSatisfy(artifact => artifact.Completeness.Should().Be(completeness));
+        graph.Observations.Should().Contain(observation =>
+            observation.Kind == "container.incomplete" && observation.Source.ArtifactId == "art-0001");
+    }
+
+    [Fact]
+    public void Build_EntryStreamUnavailable_MarksTheParentUnavailableAndAddsAnObservation()
+    {
+        var root = Leaf("unavailable-entry-root");
+        var provider = new TestContainerProvider().Register(
+            root,
+            new ContainerEntry("unreadable.bin", 1, 1, () => throw new IOException("fixture read failure")));
+
+        var graph = Build(root, provider);
+
+        graph.Incomplete.Should().BeTrue();
+        graph.Artifacts.Should().ContainSingle();
+        graph.Artifacts[0].Completeness.Should().Be(ArtifactCompleteness.Unavailable);
+        graph.Observations.Should().Contain(observation =>
+            observation.Kind == "artifact.unavailable" && observation.Source.ArtifactId == "root");
     }
 
     internal static ArtifactGraph Build(byte[] root, IContainerProvider provider, ExtractionBudget? budget = null) =>

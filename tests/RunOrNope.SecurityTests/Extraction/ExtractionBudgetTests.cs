@@ -140,6 +140,18 @@ public sealed class ExtractionBudgetTests
     }
 
     [Fact]
+    public void RootBeyondTheArtifactCeiling_IsTruncatedEvenWhenItHasNoEntries()
+    {
+        var budget = new ExtractionBudget(new ExtractionCeilings { MaxArtifacts = 0 });
+        var root = Leaf("ordinary-root");
+
+        var graph = ArtifactGraphBuilder.Build(root, Sha(root), new TestContainerProvider(), budget);
+
+        budget.Stops.Should().Contain(BudgetLimit.Artifacts);
+        AssertTruncated(graph);
+    }
+
+    [Fact]
     public void DefaultCeilingsSitBelowTheContractLimits()
     {
         // A graph built right up to the budget must still validate at the boundary.

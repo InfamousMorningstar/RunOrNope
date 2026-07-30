@@ -11,15 +11,44 @@ namespace RunOrNope.Analyzers.Content;
 /// </summary>
 public sealed record ContainerEntry(string ClaimedName, long DeclaredSize, long CompressedSize, Func<Stream> Open);
 
+public sealed record ArtifactObservationFact(
+    string Kind,
+    string Description,
+    ParserConfidence ParserConfidence,
+    long? Offset = null,
+    string? Region = null);
+
+public sealed record ContainerReadResult(
+    bool IsRecognized,
+    ArtifactCompleteness Completeness,
+    ImmutableArray<ContainerEntry> Entries,
+    ImmutableArray<ArtifactObservationFact> Observations)
+{
+    public static ContainerReadResult NotRecognized { get; } =
+        new(false, ArtifactCompleteness.Complete,
+            ImmutableArray<ContainerEntry>.Empty,
+            ImmutableArray<ArtifactObservationFact>.Empty);
+
+    public static ContainerReadResult Recognized(
+        ArtifactCompleteness completeness,
+        ImmutableArray<ContainerEntry> entries,
+        ImmutableArray<ArtifactObservationFact> observations) =>
+        new(true, completeness, entries, observations);
+}
+
+public sealed record RootContainerInput(
+    ArtifactNode Root,
+    ImmutableArray<ContainerEntry> Entries,
+    ImmutableArray<ArtifactObservationFact> Observations);
+
 /// <summary>
-/// Recognises a container format and lists what it claims to hold. Implementations are
-/// lazy: the walk stops pulling entries once a ceiling is reached, so a directory
-/// claiming millions of entries costs only the ones actually examined.
+/// Recognises a container format and returns a bounded description of what it claims to
+/// hold. The result carries recognition and completeness separately so a malformed or
+/// encrypted container can never be mistaken for an ordinary leaf.
 /// </summary>
 public interface IContainerProvider
 {
-    /// <summary>Entries when the bytes are a recognised container, otherwise <c>null</c>.</summary>
-    IEnumerable<ContainerEntry>? TryEnumerate(ReadOnlyMemory<byte> content);
+    ContainerReadResult Read(ReadOnlyMemory<byte> content);
 }
 
 /// <summary>The artifact DAG and the observations describing how it was built.</summary>
