@@ -8,8 +8,8 @@ uploaded** during local analysis.
 > ⚠️ **Work in progress — not a finished product.** RunOrNope is under active
 > development. Most of the pipeline now exists and is tested — isolation, PE/CLR
 > analysis, capability rules, nested-artifact discovery, reporting, and the desktop
-> UI — but **a known defect stops a real scan from completing end to end** (see
-> [Current status](#current-status)), and MSI analysis, YARA-X, packaging, and CI are
+> UI — and an isolated analysis now completes end to end (see
+> [Current status](#current-status)), but MSI analysis, YARA-X, packaging, and CI are
 > unimplemented. Nothing here is production-ready, and **no security claim should be
 > relied upon yet.**
 
@@ -67,15 +67,28 @@ did and did not find, and always shows how complete the analysis was.
 ## Current status
 
 An implementation checkpoint — **not yet production-ready**. The core desktop scan
-workflow is built and tested (317 tests: 253 unit, 57 security, 7 integration), while
+workflow is built and tested (318 tests: 253 unit, 58 security, 7 integration), while
 the format coverage and distribution work listed below remain incomplete.
 
-> ⚠️ **Recent fix pending Windows validation**: A handle mode mismatch that prevented
-> scans from completing has been fixed by adding `FILE_SYNCHRONOUS_IO_NONALERT` to
-> intake operations. This fix has passed security review but requires validation on
-> Windows (the test suite cannot run on macOS). The re-enabled acceptance test
-> `HandleChainTests.Analysis_DoesNotDisposeTheCallersLease` must pass before merging
-> to the main branch.
+The worker-truncation defect that previously stopped any scan from completing is
+fixed and **validated on Windows**. Intake handles are now opened with
+`FILE_SYNCHRONOUS_IO_NONALERT` (and the `SYNCHRONIZE` access right that flag
+requires), so the handle the worker inherits matches the synchronous reads it
+performs. What that validation covers, precisely:
+
+- ✅ `HandleChainTests.Analysis_DoesNotDisposeTheCallersLease` — previously skipped as
+  the reproducer, now runs and passes. It performs a **real isolated analysis**: intake
+  opens a sample, the broker launches the AppContainer worker against that borrowed
+  handle, and the returned artifact's SHA-256 matches the lease. The status is
+  asserted *not* to be `IsolationUnavailable`.
+- ⬜ That test's sample is a **128-byte synthetic MZ stub**, so it proves the
+  intake → broker → worker → contract chain carries a result. It is not evidence about
+  analysis depth or robustness on real-world binaries.
+- ⬜ The app-level workflow test drives a **fake broker**, so the WPF shell has not been
+  exercised against a live worker. No manual end-to-end run against a real executable
+  has been recorded.
+- ⬜ Validated on one host only (Windows 11 Pro, build 26200). The release-gating OS
+  matrix below is untouched.
 
 Done so far:
 
@@ -234,8 +247,10 @@ an explicit privacy warning.
 - Worker isolation and transport are implemented and locally security-tested,
   but release-gating OS/enterprise-policy validation is not complete.
 - Release-gating OS targets have not yet completed runtime/security validation.
+- The end-to-end chain is proven only by an automated test against a synthetic MZ
+  stub. The WPF shell has never been run against a live worker and a real binary, and
+  no manual end-to-end scan has been recorded.
 - No security claim should be inferred from this scaffold.
-- Contracts and intake are not yet wired into an end-to-end scan.
 
 ## Roadmap
 
@@ -249,8 +264,10 @@ an explicit privacy warning.
 6. ✅ Script-free JSON/HTML reporting with privacy controls.
 7. ⏳ WPF workflow and accessibility done; packaging, CI, and security documentation
    not started.
-8. ⏳ Worker-truncation defect fixed (FILE_SYNCHRONOUS_IO_NONALERT added to intake);
-   Windows validation and release-gating OS matrix testing pending.
+8. ✅ Worker-truncation defect fixed and validated on Windows: an isolated analysis
+   completes end to end and the reproducer test passes.
+9. ⏳ Exercise the WPF shell against a live worker and a real binary, then validate
+   across the release-gating OS matrix.
 
 ## License
 
