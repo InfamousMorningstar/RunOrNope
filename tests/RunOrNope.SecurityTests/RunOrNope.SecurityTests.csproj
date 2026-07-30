@@ -11,6 +11,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\RunOrNope.Analyzers.Content\RunOrNope.Analyzers.Content.csproj" />
+    <ProjectReference Include="..\..\src\RunOrNope.Analyzers.Msi\RunOrNope.Analyzers.Msi.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -18,6 +19,8 @@
          containers directly instead of parsing a real archive format. -->
     <Compile Include="..\RunOrNope.UnitTests\Content\TestContainerProvider.cs"
              Link="Extraction\TestContainerProvider.cs" />
+    <Compile Include="..\RunOrNope.UnitTests\Msi\MsiFixtureBuilder.cs"
+             Link="Msi\MsiFixtureBuilder.cs" />
     <ProjectReference Include="..\..\src\RunOrNope.Broker.Windows\RunOrNope.Broker.Windows.csproj" />
   </ItemGroup>
   <Target Name="BuildSelfContainedWorker" BeforeTargets="Build">
