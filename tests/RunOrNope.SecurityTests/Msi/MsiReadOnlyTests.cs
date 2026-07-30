@@ -36,6 +36,49 @@ public sealed class MsiReadOnlyTests
     }
 
     [Fact]
+    public void Summary_and_stream_inventory_preserve_hash_and_release_every_handle()
+    {
+        var content = Enumerable.Range(0, 70_001)
+            .Select(index => (byte)(index % 251))
+            .ToArray();
+        using var fixture = new MsiFixtureBuilder()
+            .AddTable(
+                "CREATE TABLE `FixtureStreams` (`Key` CHAR(72) NOT NULL, `Payload` OBJECT PRIMARY KEY `Key`)")
+            .AddStream("FixtureStreams", "payload", content)
+            .SetSummary(2, "Benign Fixture");
+        var path = fixture.Commit();
+        var before = SHA256.HashData(File.ReadAllBytes(path));
+
+        using (var database = MsiDatabase.OpenReadOnly(path))
+        {
+            database.ReadSummary(
+                    MsiAnalysisLimits.Default,
+                    TestContext.Current.CancellationToken)
+                .Single(property => property.PropertyId == 2)
+                .Value.Text!.DisplayText.Should().Be("Benign Fixture");
+            var key = database.Query(
+                    MsiTables.FixtureStreams,
+                    [],
+                    MsiAnalysisLimits.Default,
+                    TestContext.Current.CancellationToken)
+                .Single().Fields[0];
+            using var stream = database.OpenStream(
+                MsiTables.FixtureStreams,
+                [key],
+                new RunOrNope.Analyzers.Content.ExtractionBudget(),
+                TestContext.Current.CancellationToken);
+            SHA256.HashData(stream).Should().Equal(SHA256.HashData(content));
+        }
+
+        byte[] after;
+        using (var exclusive = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            after = SHA256.HashData(exclusive);
+        }
+        after.Should().Equal(before);
+    }
+
+    [Fact]
     public void Production_metadata_contains_none_of_the_fixture_write_imports()
     {
         var prohibited = new[]

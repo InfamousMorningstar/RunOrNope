@@ -8,6 +8,7 @@ internal enum MsiValueKind
     Integer,
     String,
     Stream,
+    FileTime,
 }
 
 internal sealed record MsiRecordValue(
@@ -16,7 +17,10 @@ internal sealed record MsiRecordValue(
     MsiTextResult? Text,
     long? StreamLength,
     bool IsComplete = true,
-    string? IncompleteReason = null);
+    string? IncompleteReason = null,
+    string? Identity = null,
+    DateTimeOffset? Timestamp = null,
+    TimeSpan? Duration = null);
 
 internal sealed record MsiRow(ImmutableArray<MsiRecordValue> Fields);
 
@@ -75,4 +79,10 @@ internal static class MsiTables
             new("Key", MsiColumnType.String, false),
             new("Payload", MsiColumnType.Stream, false),
         ]);
+
+    internal static bool IsKnown(MsiTableDefinition definition) =>
+        ReferenceEquals(definition, Tables)
+        || ReferenceEquals(definition, Property)
+        || ReferenceEquals(definition, FixtureValues)
+        || ReferenceEquals(definition, FixtureStreams);
 }

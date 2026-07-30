@@ -14,6 +14,13 @@ internal sealed class MsiFixtureBuilder : IDisposable
     private readonly List<string> streamFiles = [];
     private nint database;
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeFileTime
+    {
+        internal uint Low;
+        internal uint High;
+    }
+
     public MsiFixtureBuilder()
     {
         Path = System.IO.Path.Combine(
@@ -107,6 +114,9 @@ internal sealed class MsiFixtureBuilder : IDisposable
                     summary, (uint)propertyId, 3, number, nint.Zero, null),
                 string text => MsiSummaryInfoSetPropertyW(
                     summary, (uint)propertyId, 30, 0, nint.Zero, text),
+                DateTimeOffset timestamp => SetSummaryFileTime(summary, propertyId, timestamp),
+                TimeSpan duration when propertyId == 10 =>
+                    SetSummaryFileTime(summary, propertyId, duration.Ticks),
                 _ => throw new ArgumentException(
                     $"Unsupported benign summary value type {value.GetType().Name}.",
                     nameof(value)),
@@ -120,6 +130,20 @@ internal sealed class MsiFixtureBuilder : IDisposable
         }
 
         return this;
+    }
+
+    private static uint SetSummaryFileTime(nint summary, int propertyId, DateTimeOffset timestamp)
+        => SetSummaryFileTime(summary, propertyId, timestamp.ToFileTime());
+
+    private static uint SetSummaryFileTime(nint summary, int propertyId, long value)
+    {
+        var fileTime = new NativeFileTime
+        {
+            Low = unchecked((uint)value),
+            High = unchecked((uint)(value >> 32)),
+        };
+        return MsiSummaryInfoSetPropertyFileTimeW(
+            summary, (uint)propertyId, 64, 0, ref fileTime, null);
     }
 
     public string Commit()
@@ -207,6 +231,19 @@ internal sealed class MsiFixtureBuilder : IDisposable
     [DllImport("msi.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Winapi)]
     private static extern uint MsiSummaryInfoSetPropertyW(
         nint summary, uint propertyId, uint dataType, int integerValue, nint fileTime, string? value);
+
+    [DllImport(
+        "msi.dll",
+        EntryPoint = "MsiSummaryInfoSetPropertyW",
+        CharSet = CharSet.Unicode,
+        CallingConvention = CallingConvention.Winapi)]
+    private static extern uint MsiSummaryInfoSetPropertyFileTimeW(
+        nint summary,
+        uint propertyId,
+        uint dataType,
+        int integerValue,
+        ref NativeFileTime fileTime,
+        string? value);
 
     [DllImport("msi.dll", CallingConvention = CallingConvention.Winapi)]
     private static extern uint MsiSummaryInfoPersist(nint summary);
