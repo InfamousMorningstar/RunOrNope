@@ -38,9 +38,7 @@ public sealed class HandleChainTests : IDisposable
             broker.AnalyzeAsync(lease, new ScanRequest(string.Empty, ScanMode.Quick), TestContext.Current.CancellationToken));
     }
 
-    [Fact(Skip = "Blocked by a pre-existing defect: a worker launched against an intake-opened " +
-                 "handle writes a truncated response frame. Reproduces through the raw-handle " +
-                 "entry point too, so it predates the lease-taking API. See HANDOFF note.")]
+    [Fact]
     public async Task Analysis_DoesNotDisposeTheCallersLease()
     {
         using var lease = await SafeFileIntake.OpenAsync(_samplePath, IntakePolicy.Default, TestContext.Current.CancellationToken);

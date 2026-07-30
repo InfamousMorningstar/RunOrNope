@@ -97,6 +97,7 @@ internal sealed class WindowsRelativePathNative : IRelativePathNative
     private const uint ObjCaseInsensitive = 0x00000040;
     private const uint FileDirectoryFile = 0x00000001;
     private const uint FileNonDirectoryFile = 0x00000040;
+    private const uint FileSynchronousIoNonAlert = 0x00000020;
     private const uint FileOpenReparsePoint = 0x00200000;
 
     public SafeFileHandle OpenRoot(string root)
@@ -109,11 +110,12 @@ internal sealed class WindowsRelativePathNative : IRelativePathNative
 
     public SafeFileHandle OpenRelativeDirectory(SafeFileHandle parent, string component) =>
         NtOpenRelative(parent, component, FileReadAttributes | Synchronize,
-            DirectoryShare, FileDirectoryFile | FileOpenReparsePoint);
+            DirectoryShare,
+            FileDirectoryFile | FileSynchronousIoNonAlert | FileOpenReparsePoint);
 
     public SafeFileHandle OpenRelativeFile(SafeFileHandle parent, string component) =>
         NtOpenRelative(parent, component, GenericRead, FileShareRead,
-            FileNonDirectoryFile | FileOpenReparsePoint);
+            FileNonDirectoryFile | FileSynchronousIoNonAlert | FileOpenReparsePoint);
 
     public FileSnapshot ReadSnapshot(SafeFileHandle handle) => WindowsFileIdentity.Read(handle);
     public string GetFinalPath(SafeFileHandle handle) => WindowsIntakeOperations.ReadFinalPath(handle);
@@ -150,7 +152,11 @@ internal sealed class WindowsRelativePathNative : IRelativePathNative
             // component is resolved beneath the already verified/held parent
             // handle, eliminating a path check/open race. FILE_OPEN (1) never
             // creates or modifies an object; FILE_OPEN_REPARSE_POINT prevents
-            // traversal of the component itself.
+            // traversal of the component itself. FILE_SYNCHRONOUS_IO_NONALERT
+            // makes the returned handle compatible with synchronous consumers
+            // such as the isolated worker's FileStream. Without it, NtCreateFile
+            // returns an asynchronous handle even though SafeFileHandle carries
+            // no metadata that lets FileStream select the matching strategy.
             var status = NtCreateFile(out var handle, desiredAccess, ref attributes, out _,
                 IntPtr.Zero, 0, shareAccess, NtFileOpen, createOptions, IntPtr.Zero, 0);
             if (status < 0 || handle.IsInvalid)

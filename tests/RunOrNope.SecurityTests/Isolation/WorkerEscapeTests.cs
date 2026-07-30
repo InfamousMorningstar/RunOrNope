@@ -41,8 +41,9 @@ public sealed class WorkerEscapeTests
     public async Task Frame_reader_rejects_truncated_and_invalid_utf8_payloads()
     {
         await using var truncated = new MemoryStream([3, 0, 0, 0, 1]);
-        await Assert.ThrowsAsync<WorkerProtocolException>(
+        var exception = await Assert.ThrowsAsync<WorkerProtocolException>(
             () => WorkerProtocol.ReadFrameAsync(truncated, CancellationToken.None).AsTask());
+        Assert.Contains("1 of 3 expected bytes", exception.Message, StringComparison.Ordinal);
 
         await using var invalid = new MemoryStream([2, 0, 0, 0, 0xC3, 0x28]);
         await Assert.ThrowsAsync<WorkerProtocolException>(
