@@ -18,10 +18,11 @@ public static class MsiCompoundFilePreflight
     public static MsiPreflightResult Classify(Stream stream)
     {
         ArgumentNullException.ThrowIfNull(stream);
-        if (!stream.CanRead || !stream.CanSeek) return Malformed("The compound-file stream is not readable and seekable.");
 
         try
         {
+            if (!stream.CanRead || !stream.CanSeek)
+                return Malformed("The compound-file stream is not readable and seekable.");
             if (stream.Length < HeaderSize) return Malformed("The compound-file header is truncated.");
             stream.Position = 0;
             var header = new byte[HeaderSize];
@@ -41,7 +42,13 @@ public static class MsiCompoundFilePreflight
                 return Malformed("A version 3 compound file declares directory sectors.");
 
             var sectorSize = 1 << sectorShift;
-            var availableSectors = checked((stream.Length - HeaderSize) / sectorSize);
+            var streamLength = stream.Length;
+            if (streamLength < sectorSize)
+                return Malformed("The compound-file header sector is truncated.");
+            if (streamLength % sectorSize != 0)
+                return Malformed("The compound-file layout ends in a partial sector.");
+
+            var availableSectors = checked((streamLength - sectorSize) / sectorSize);
             var fatSectors = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(0x2c));
             var firstDirectorySector = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(0x30));
             var difatSectors = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(0x48));
@@ -54,17 +61,18 @@ public static class MsiCompoundFilePreflight
             if (difatSectors > 0 && firstDifatSector == EndOfChain)
                 return Malformed("The compound-file DIFAT chain is missing.");
 
-            if (!IsSectorInStream(firstDirectorySector, sectorSize, stream.Length))
+            if (!IsSectorInStream(firstDirectorySector, sectorSize, streamLength))
                 return Malformed("The first directory sector is outside the stream.");
 
-            var directoryOffset = checked((checked((long)firstDirectorySector + 1)) * sectorSize);
+            var directoryOffset = SectorOffset(firstDirectorySector, sectorSize);
             stream.Position = directoryOffset;
-            var directoryEntry = new byte[128];
-            if (!ReadExactly(stream, directoryEntry)) return Malformed("The root directory entry is truncated.");
+            var directorySector = new byte[sectorSize];
+            if (!ReadExactly(stream, directorySector)) return Malformed("The root directory sector is truncated.");
+            var directoryEntry = directorySector.AsSpan(0, 128);
             if (directoryEntry[DirectoryEntryTypeOffset] != 5)
                 return Malformed("The first directory entry is not root storage.");
 
-            var rootClsid = new Guid(directoryEntry.AsSpan(DirectoryEntryClsidOffset, 16));
+            var rootClsid = new Guid(directoryEntry.Slice(DirectoryEntryClsidOffset, 16));
             return rootClsid == MsiRootClsid
                 ? new MsiPreflightResult(MsiFormatDisposition.MsiPackage, null)
                 : new MsiPreflightResult(MsiFormatDisposition.OtherCompoundFile, null);
@@ -77,6 +85,10 @@ public static class MsiCompoundFilePreflight
         {
             return Malformed("The compound-file stream could not be read.");
         }
+        catch (UnauthorizedAccessException)
+        {
+            return Malformed("The compound-file stream could not be read.");
+        }
         catch (OverflowException)
         {
             return Malformed("The compound-file structure overflows its bounds.");
@@ -85,9 +97,12 @@ public static class MsiCompoundFilePreflight
 
     private static bool IsSectorInStream(uint sectorId, int sectorSize, long streamLength)
     {
-        var offset = checked((checked((long)sectorId + 1)) * sectorSize);
-        return offset >= HeaderSize && checked(offset + 128) <= streamLength;
+        var offset = SectorOffset(sectorId, sectorSize);
+        return offset >= sectorSize && checked(offset + sectorSize) <= streamLength;
     }
+
+    private static long SectorOffset(uint sectorId, int sectorSize) =>
+        checked((checked((long)sectorId + 1)) * sectorSize);
 
     private static bool ReadExactly(Stream stream, Span<byte> buffer)
     {
