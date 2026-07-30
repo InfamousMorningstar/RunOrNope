@@ -19,6 +19,14 @@ public sealed class ProjectGraphTests
     }
 
     [Fact]
+    public void Msi_analyzer_must_reference_only_contracts_and_content() =>
+        ProjectGraph.Load("RunOrNope.slnx")
+            .ReferencesFrom("RunOrNope.Analyzers.Msi")
+            .Should().BeEquivalentTo(
+                "RunOrNope.Contracts",
+                "RunOrNope.Analyzers.Content");
+
+    [Fact]
     public void Repository_restores_must_use_locked_mode_by_default()
     {
         var properties = XDocument.Load(RepositoryFiles.PathTo("Directory.Build.props"));

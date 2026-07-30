@@ -216,6 +216,13 @@
           "RunOrNope.Contracts": "[1.0.0, )"
         }
       },
+      "runornope.analyzers.msi": {
+        "type": "Project",
+        "dependencies": {
+          "RunOrNope.Analyzers.Content": "[1.0.0, )",
+          "RunOrNope.Contracts": "[1.0.0, )"
+        }
+      },
       "runornope.analyzers.pe": {
         "type": "Project",
         "dependencies": {

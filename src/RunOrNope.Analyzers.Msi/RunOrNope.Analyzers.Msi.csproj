@@ -1,5 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <ProjectReference Include="..\RunOrNope.Contracts\RunOrNope.Contracts.csproj" />
+    <ProjectReference Include="..\RunOrNope.Analyzers.Content\RunOrNope.Analyzers.Content.csproj" />
   </ItemGroup>
 </Project>
