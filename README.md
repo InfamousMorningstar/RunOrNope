@@ -66,9 +66,16 @@ did and did not find, and always shows how complete the analysis was.
 
 ## Current status
 
-An implementation checkpoint — **not yet a usable scanner**. Most components are
-built and tested (317 tests: 253 unit, 57 security, 7 integration), but a real scan
-does not yet complete. See [Known blocking defect](#known-blocking-defect).
+An implementation checkpoint — **not yet production-ready**. The core desktop scan
+workflow is built and tested (317 tests: 253 unit, 57 security, 7 integration), while
+the format coverage and distribution work listed below remain incomplete.
+
+> ⚠️ **Recent fix pending Windows validation**: A handle mode mismatch that prevented
+> scans from completing has been fixed by adding `FILE_SYNCHRONOUS_IO_NONALERT` to
+> intake operations. This fix has passed security review but requires validation on
+> Windows (the test suite cannot run on macOS). The re-enabled acceptance test
+> `HandleChainTests.Analysis_DoesNotDisposeTheCallersLease` must pass before merging
+> to the main branch.
 
 Done so far:
 
@@ -108,16 +115,6 @@ Done so far:
   cancellation, capability cards that preserve evidence tiers, report export, and an
   explicit SHA-256-only VirusTotal lookup (confirmed per request, redirects denied,
   memory-only session key, and never an input to the verdict).
-
-### Known blocking defect
-
-A worker launched against an intake-opened handle writes a truncated response frame,
-so the broker fails closed to `IsolationUnavailable` and a real scan cannot complete.
-It reproduces through the broker's raw-handle entry point too, so it is not caused by
-the desktop workflow — it simply had not been exercised until intake and broker were
-first composed. Every component is tested independently and the failure is fail-closed
-(no favorable result is produced), but until this is fixed RunOrNope cannot scan a
-file. A skipped security test carries the reproducer.
 
 Not done yet: MSI analysis, string extraction, ASAR/JAR readers, YARA-X, packaging,
 and CI. **No security claim should be inferred from this checkpoint.**
@@ -224,7 +221,6 @@ an explicit privacy warning.
 
 ## Current limitations
 
-- A real scan cannot complete: see [Known blocking defect](#known-blocking-defect).
 - MSI analysis is not implemented, so `.msi` inputs are rejected as unsupported.
 - Nested-artifact discovery has the graph, budget, and path policy but no container
   readers yet, so nothing is actually unpacked. String extraction is not implemented.
@@ -253,8 +249,8 @@ an explicit privacy warning.
 6. ✅ Script-free JSON/HTML reporting with privacy controls.
 7. ⏳ WPF workflow and accessibility done; packaging, CI, and security documentation
    not started.
-8. ⬜ Fix the worker-truncation defect so a scan completes end to end, then validate
-   against the release-gating OS matrix.
+8. ⏳ Worker-truncation defect fixed (FILE_SYNCHRONOUS_IO_NONALERT added to intake);
+   Windows validation and release-gating OS matrix testing pending.
 
 ## License
 

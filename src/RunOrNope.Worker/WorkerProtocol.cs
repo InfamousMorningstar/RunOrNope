@@ -216,19 +216,22 @@ public static class WorkerProtocol
 
     private static async ValueTask ReadExactlyAsync(Stream stream, Memory<byte> buffer, CancellationToken token)
     {
+        var offset = 0;
         try
         {
-            var offset = 0;
             while (offset < buffer.Length)
             {
                 var read = await stream.ReadAsync(buffer[offset..], token).ConfigureAwait(false);
-                if (read == 0) throw new WorkerProtocolException("Frame ended before its declared length.");
+                if (read == 0)
+                    throw new WorkerProtocolException(
+                        $"Frame ended after {offset} of {buffer.Length} expected bytes.");
                 offset += read;
             }
         }
         catch (EndOfStreamException exception)
         {
-            throw new WorkerProtocolException("Frame ended before its declared length.", exception);
+            throw new WorkerProtocolException(
+                $"Frame ended after {offset} of {buffer.Length} expected bytes.", exception);
         }
     }
 }
