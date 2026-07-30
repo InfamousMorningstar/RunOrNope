@@ -113,8 +113,12 @@ internal sealed class WindowsRelativePathNative : IRelativePathNative
             DirectoryShare,
             FileDirectoryFile | FileSynchronousIoNonAlert | FileOpenReparsePoint);
 
+    // SYNCHRONIZE is mandatory whenever FILE_SYNCHRONOUS_IO_NONALERT is requested.
+    // NtCreateFile validates the raw mask: unlike CreateFileW it does not expand
+    // GENERIC_READ to FILE_GENERIC_READ (which would already carry SYNCHRONIZE)
+    // first, so omitting it here fails the open with STATUS_INVALID_PARAMETER.
     public SafeFileHandle OpenRelativeFile(SafeFileHandle parent, string component) =>
-        NtOpenRelative(parent, component, GenericRead, FileShareRead,
+        NtOpenRelative(parent, component, GenericRead | Synchronize, FileShareRead,
             FileNonDirectoryFile | FileSynchronousIoNonAlert | FileOpenReparsePoint);
 
     public FileSnapshot ReadSnapshot(SafeFileHandle handle) => WindowsFileIdentity.Read(handle);
