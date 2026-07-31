@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-RunOrNope is distributed under the MIT License (see `LICENSE`). It incorporates,
+Project VOIDLENS is distributed under the MIT License (see `LICENSE`). It incorporates,
 and plans to incorporate, the third-party components listed below. Each is used
 under its own license; those licenses and their attribution requirements are
 preserved here.

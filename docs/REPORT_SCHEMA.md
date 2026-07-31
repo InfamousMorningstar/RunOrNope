@@ -1,6 +1,6 @@
-# RunOrNope report format
+# Project VOIDLENS report format
 
-RunOrNope exports a validated static-analysis result as deterministic JSON or as a
+Project VOIDLENS exports a validated static-analysis result as deterministic JSON or as a
 self-contained, script-free HTML document. Reports never contain submitted sample
 bytes. The sample name is a display name, not a path to be opened or resolved.
 

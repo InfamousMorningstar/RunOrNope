@@ -11,6 +11,8 @@
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <RestoreLockedMode>true</RestoreLockedMode>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <!-- Product name only. Assembly names and namespaces stay RunOrNope. -->
+    <Product>voidlens</Product>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">

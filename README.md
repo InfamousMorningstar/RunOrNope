@@ -1,11 +1,11 @@
-# RunOrNope
+# Project VOIDLENS
 
-RunOrNope is a security-sensitive Windows desktop static analyzer for explaining
+Project VOIDLENS is a security-sensitive Windows desktop static analyzer for explaining
 what an untrusted executable or installer appears capable of doing. Its central
 promise is simple: submitted samples are **never executed** and **never
 uploaded** during local analysis.
 
-> ⚠️ **Work in progress — not a finished product.** RunOrNope is under active
+> ⚠️ **Work in progress — not a finished product.** Project VOIDLENS is under active
 > development. Most of the pipeline now exists and is tested — isolation, PE/CLR
 > analysis, capability rules, nested-artifact discovery, reporting, and the desktop
 > UI — and an isolated analysis now completes end to end (see
@@ -19,7 +19,7 @@ uploaded** during local analysis.
 > wired. They illustrate the report's shape and language — they are not produced by
 > the current build.
 
-RunOrNope reports capabilities in terms of the exact imports, strings, and IL it
+Project VOIDLENS reports capabilities in terms of the exact imports, strings, and IL it
 found, never as claims about what a file "did." Each line expands to the precise
 evidence — imported APIs, decoded strings, call sites, byte offsets — and an
 evidence tier, so a reviewer can check every claim.
@@ -58,16 +58,16 @@ qualified reviewer.
 
 > No material concerns were identified by the enabled static checks. This does not
 > rule out malicious behavior, downloaded components, environment-dependent actions,
-> or vulnerabilities outside RunOrNope's rules. Do not run a file solely because this
+> or vulnerabilities outside VOIDLENS's rules. Do not run a file solely because this
 > result is favorable.
 
-RunOrNope never labels a file "safe" outright — it reports what the enabled checks
+Project VOIDLENS never labels a file "safe" outright — it reports what the enabled checks
 did and did not find, and always shows how complete the analysis was.
 
 ## Current status
 
 An implementation checkpoint — **not yet production-ready**. The core desktop scan
-workflow is built and tested (318 tests: 253 unit, 58 security, 7 integration), while
+workflow is built and tested (503 tests: 403 unit, 93 security, 7 integration), while
 the format coverage and distribution work listed below remain incomplete.
 
 The worker-truncation defect that previously stopped any scan from completing is
@@ -188,7 +188,7 @@ graph test. Before a release, every release-gating target must pass the planned
 AppContainer, Job Object, mitigation-policy, WinTrust, read-only MSI, long-path,
 and enterprise-policy suites on a then-serviced patch level. The exact serviced
 revision and servicing state will be recorded in release evidence; until those
-gates exist and pass, RunOrNope has no supported runtime configuration.
+gates exist and pass, Project VOIDLENS has no supported runtime configuration.
 
 Install the repository-local SDK with Microsoft's official installer:
 
@@ -271,11 +271,11 @@ an explicit privacy warning.
 
 ## License
 
-RunOrNope is released under the [MIT License](LICENSE).
+Project VOIDLENS is released under the [MIT License](LICENSE).
 
 ## Third-party components
 
-RunOrNope builds on free, open-source components, and integrates established
+Project VOIDLENS builds on free, open-source components, and integrates established
 open-source security tools rather than reinventing them. Every dependency's
 license is recorded in [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md); all are
 free to use and redistribute, and licenses are re-verified before each release.
@@ -288,5 +288,5 @@ free to use and redistribute, and licenses are re-verified before each release.
   isolated extraction adapters.
 
 Malware-family detection (for example information-stealer families) is carried
-only as YARA rules and signatures that *recognize* those families. RunOrNope never
+only as YARA rules and signatures that *recognize* those families. Project VOIDLENS never
 vendors malware samples or payloads into the repository or release artifacts.
