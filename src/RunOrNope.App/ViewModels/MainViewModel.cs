@@ -152,7 +152,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         catch (IntakeRejectedException)
         {
             State = ScanUiState.Failed;
-            StatusMessage = "RunOrNope could not safely acquire this local file.";
+            StatusMessage = "voidlens could not safely acquire this local file.";
         }
         catch (Exception) when (!_disposed)
         {
@@ -225,7 +225,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             await _export.ExportAsync(
                 CompletedScan.Result, destination, CancellationToken.None).ConfigureAwait(true);
-            StatusMessage = "Report saved. RunOrNope did not open or preview it.";
+            StatusMessage = "Report saved. voidlens did not open or preview it.";
         }
         catch (Exception)
         {

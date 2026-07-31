@@ -50,7 +50,7 @@ public partial class MainWindow : Window, IUserInteraction, IDisposable
             AddExtension = true,
             DefaultExt = format == ReportFormat.Html ? ".html" : ".json",
             Filter = format == ReportFormat.Html ? "HTML report|*.html" : "JSON report|*.json",
-            Title = "Save RunOrNope report",
+            Title = "Save voidlens report",
         };
         return dialog.ShowDialog(this) == true
             ? new(dialog.FileName, format, ReportEvidenceMode.Redacted)
