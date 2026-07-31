@@ -66,9 +66,11 @@ did and did not find, and always shows how complete the analysis was.
 
 ## Current status
 
-An implementation checkpoint — **not yet production-ready**. The core desktop scan
-workflow is built and tested (503 tests: 403 unit, 93 security, 7 integration), while
-the format coverage and distribution work listed below remain incomplete.
+An implementation checkpoint — **not yet production-ready, and not yet usable**. The
+pipeline components are built and tested (503 tests: 403 unit, 93 security,
+7 integration, 0 skipped), but the desktop application cannot currently complete a
+scan, and the format coverage and distribution work listed below remains incomplete.
+The test count measures the components, not a working product.
 
 The worker-truncation defect that previously stopped any scan from completing is
 fixed and **validated on Windows**. Intake handles are now opened with
@@ -84,9 +86,12 @@ performs. What that validation covers, precisely:
 - ⬜ That test's sample is a **128-byte synthetic MZ stub**, so it proves the
   intake → broker → worker → contract chain carries a result. It is not evidence about
   analysis depth or robustness on real-world binaries.
-- ⬜ The app-level workflow test drives a **fake broker**, so the WPF shell has not been
-  exercised against a live worker. No manual end-to-end run against a real executable
-  has been recorded.
+- ❌ **The desktop application still cannot complete a scan.** A manual run against
+  `C:\Windows\System32\notepad.exe` reproduced the same SHA-256 in the UI but returned
+  `IsolationUnavailable` / `Withheld`. The cause is deterministic composition, not an
+  AppContainer fault: `MainWindow` constructs a default `WorkerBroker` with no
+  authenticated worker-package manifest, so the broker correctly fails closed. The
+  app-level integration test drives a *fake* broker, which is why nothing caught it.
 - ⬜ Validated on one host only (Windows 11 Pro, build 26200). The release-gating OS
   matrix below is untouched.
 
@@ -129,8 +134,17 @@ Done so far:
   explicit SHA-256-only VirusTotal lookup (confirmed per request, redirects denied,
   memory-only session key, and never an input to the verdict).
 
-Not done yet: MSI analysis, string extraction, ASAR/JAR readers, YARA-X, packaging,
-and CI. **No security claim should be inferred from this checkpoint.**
+- MSI analysis (in progress, 5 of 12 planned tasks): bounded MSI primitives and a
+  compound-file preflight, custom-action decoding with UI/execute reachability, a
+  read-only `msi.dll` boundary restricted to an exact 13-function allowlist enforced by
+  IL-level guards, and inventory of SummaryInformation plus the package-structure
+  tables. Read-only database access was proven to work inside the capability-free
+  AppContainer before the design was settled. **Not yet reachable:** MSI roots are not
+  routed through the worker, so `.msi` inputs are still rejected as unsupported.
+
+Not done yet: routing MSI through the worker, embedded-cabinet and nested-storage
+traversal, string extraction, ASAR/JAR readers, YARA-X, packaging, and CI.
+**No security claim should be inferred from this checkpoint.**
 
 ## Planned supported root formats
 
@@ -234,7 +248,12 @@ an explicit privacy warning.
 
 ## Current limitations
 
-- MSI analysis is not implemented, so `.msi` inputs are rejected as unsupported.
+- The desktop application cannot complete a scan: it composes a broker without an
+  authenticated worker package and always returns `IsolationUnavailable`.
+- MSI analysis exists as a tested analyzer but is not wired to the worker, so `.msi`
+  inputs are still rejected as unsupported. An MSI whose payload sits in an embedded
+  cabinet is not yet forced incomplete — that is scheduled before MSI roots become
+  reachable, so no favourable result can be produced from unexamined cabinet content.
 - Nested-artifact discovery has the graph, budget, and path policy but no container
   readers yet, so nothing is actually unpacked. String extraction is not implemented.
 - Capability rules cover imports and P/Invokes only. There is no data-flow analysis,
@@ -248,8 +267,8 @@ an explicit privacy warning.
   but release-gating OS/enterprise-policy validation is not complete.
 - Release-gating OS targets have not yet completed runtime/security validation.
 - The end-to-end chain is proven only by an automated test against a synthetic MZ
-  stub. The WPF shell has never been run against a live worker and a real binary, and
-  no manual end-to-end scan has been recorded.
+  stub, driven by an authenticated test worker package. The shipping application does
+  not compose one, so no real scan has ever completed through the UI.
 - No security claim should be inferred from this scaffold.
 
 ## Roadmap
@@ -258,7 +277,8 @@ an explicit privacy warning.
 2. ✅ Single-handle intake with identity and mutation checks.
 3. ✅ Fail-closed AppContainer and Job Object worker isolation.
 4. ⏳ Read-only analysis — PE/CLR done; the nested-content graph and budget are done
-   but have no container readers; MSI not started.
+   but have no container readers; MSI analysis is 5 of 12 tasks in and not yet routed
+   through the worker.
 5. ⏳ Evidence-backed capability rules — import and P/Invoke rules done; YARA-X and
    data-flow-backed evidence not started.
 6. ✅ Script-free JSON/HTML reporting with privacy controls.
@@ -266,8 +286,12 @@ an explicit privacy warning.
    not started.
 8. ✅ Worker-truncation defect fixed and validated on Windows: an isolated analysis
    completes end to end and the reproducer test passes.
-9. ⏳ Exercise the WPF shell against a live worker and a real binary, then validate
-   across the release-gating OS matrix.
+9. ⬜ Compose the application with an authenticated worker package so a scan can
+   actually complete, and add a regression test against the real composition. This is
+   the blocker between the current build and a usable tool.
+10. ⏳ Finish MSI: route roots through the worker, force incompleteness for unexpanded
+    cabinets and nested storages, and prove real AppContainer MSI analysis.
+11. ⬜ Validate across the release-gating OS matrix.
 
 ## License
 
