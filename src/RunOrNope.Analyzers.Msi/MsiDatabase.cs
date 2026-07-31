@@ -16,26 +16,26 @@ internal struct MsiNativeFileTime
 
 internal interface IMsiNativeApi
 {
-    uint OpenDatabaseReadOnly(string path, out nint database);
-    uint OpenView(nint database, string query, out nint view);
-    uint ExecuteView(nint view, nint record);
-    uint FetchView(nint view, out nint record);
-    uint CloseView(nint view);
-    uint GetFieldCount(nint record);
-    bool IsNull(nint record, uint field);
-    int GetInteger(nint record, uint field);
-    uint GetString(nint record, uint field, char[] value, ref uint length);
-    uint ReadStream(nint record, uint field, byte[] buffer, ref uint length);
-    uint GetSummary(nint database, out nint summary);
+    uint OpenDatabaseReadOnly(string path, out uint database);
+    uint OpenView(uint database, string query, out uint view);
+    uint ExecuteView(uint view, uint record);
+    uint FetchView(uint view, out uint record);
+    uint CloseView(uint view);
+    uint GetFieldCount(uint record);
+    bool IsNull(uint record, uint field);
+    int GetInteger(uint record, uint field);
+    uint GetString(uint record, uint field, char[] value, ref uint length);
+    uint ReadStream(uint record, uint field, byte[] buffer, ref uint length);
+    uint GetSummary(uint database, out uint summary);
     uint GetSummaryProperty(
-        nint summary,
+        uint summary,
         uint propertyId,
         out uint dataType,
         out int integerValue,
         out MsiNativeFileTime fileTime,
         char[] value,
         ref uint length);
-    uint CloseHandle(nint handle);
+    uint CloseHandle(uint handle);
 }
 
 internal interface IMsiDatabaseReader : IDisposable
@@ -92,7 +92,6 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
     private const uint VariantI2 = 2;
     private const uint VariantI4 = 3;
     private const uint VariantLpstr = 30;
-    private const uint VariantLpwstr = 31;
     private const uint VariantFileTime = 64;
     private const int StreamBufferSize = 64 * 1024;
     private readonly IMsiNativeApi native;
@@ -205,14 +204,16 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
         MsiAnalysisLimits limits,
         CancellationToken cancellationToken)
     {
-        using var view = OpenView(definition.Query);
-        Check(native.ExecuteView(view.DangerousGetHandle(), nint.Zero), "execute fixed query");
+        using var databaseLease = handle.AcquireLease();
+        using var view = OpenView(databaseLease.Value, definition.Query);
+        using var viewLease = view.AcquireLease();
+        Check(native.ExecuteView(viewLease.Value, 0), "execute fixed query");
 
         var rowCount = 0;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var status = native.FetchView(view.DangerousGetHandle(), out var rawRecord);
+            var status = native.FetchView(viewLease.Value, out var rawRecord);
             using var record = new SafeMsiRecordHandle(native, rawRecord);
             if (status == ErrorNoMoreItems)
             {
@@ -228,7 +229,8 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
                 throw new MsiDataIncompleteException(
                     $"MSI table {definition.Name} exceeded the configured row limit.");
             }
-            yield return ReadRow(record, definition, limits);
+            using var recordLease = record.AcquireLease();
+            yield return ReadRow(recordLease.Value, definition, limits);
         }
     }
 
@@ -239,17 +241,19 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
         ArgumentNullException.ThrowIfNull(limits);
         ThrowIfDisposed();
         limits.Validate();
-        var status = native.GetSummary(handle.DangerousGetHandle(), out var rawSummary);
+        using var databaseLease = handle.AcquireLease();
+        var status = native.GetSummary(databaseLease.Value, out var rawSummary);
         using var summary = new SafeMsiSummaryHandle(native, rawSummary);
         if (status != ErrorSuccess)
         {
             throw new MsiDatabaseException("open summary information", status);
         }
+        using var summaryLease = summary.AcquireLease();
         var properties = ImmutableArray.CreateBuilder<MsiSummaryProperty>();
         for (var propertyId = 1; propertyId <= 19; propertyId++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var property = ReadSummaryProperty(summary, propertyId, limits);
+            var property = ReadSummaryProperty(summaryLease.Value, propertyId, limits);
             if (property is not null) properties.Add(property);
         }
         return properties.ToImmutable();
@@ -298,6 +302,8 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
                 !key.IsComplete
                 || key.Kind != MsiValueKind.String
                 || key.Identity is null
+                || key.Identity.Length
+                    > checked(MsiAnalysisLimits.Default.MaxTextScalars * 2)
                 || MsiTextPolicy.Sanitize(key.Identity, MsiAnalysisLimits.Default.MaxTextScalars)
                     .WasTruncated))
         {
@@ -305,13 +311,15 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
                 "MSI stream keys must be complete bounded raw identities.");
         }
 
-        using var view = OpenView(definition.Query);
-        Check(native.ExecuteView(view.DangerousGetHandle(), nint.Zero), "execute fixed stream query");
+        using var databaseLease = handle.AcquireLease();
+        using var view = OpenView(databaseLease.Value, definition.Query);
+        using var viewLease = view.AcquireLease();
+        Check(native.ExecuteView(viewLease.Value, 0), "execute fixed stream query");
         var rowCount = 0;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var status = native.FetchView(view.DangerousGetHandle(), out var rawRecord);
+            var status = native.FetchView(viewLease.Value, out var rawRecord);
             using var record = new SafeMsiRecordHandle(native, rawRecord);
             if (status == ErrorNoMoreItems)
             {
@@ -328,9 +336,21 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
                 throw new MsiDataIncompleteException(
                     $"MSI table {definition.Name} exceeded the configured stream-selection row limit.");
             }
-            ValidateFieldCount(record, definition, MsiAnalysisLimits.Default);
-            if (!KeysMatch(record, definition, keyParameters, cancellationToken)) continue;
-            return ReadStream(record, checked((uint)streamIndex + 1), budget, cancellationToken);
+            using var recordLease = record.AcquireLease();
+            ValidateFieldCount(recordLease.Value, definition, MsiAnalysisLimits.Default);
+            if (!KeysMatch(
+                    recordLease.Value,
+                    definition,
+                    keyParameters,
+                    cancellationToken))
+            {
+                continue;
+            }
+            return ReadStream(
+                recordLease.Value,
+                checked((uint)streamIndex + 1),
+                budget,
+                cancellationToken);
         }
     }
 
@@ -368,6 +388,26 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
         var copiedLength = Math.Min(secondLength, checked((uint)maxUtf16Units));
         var rawText = new string(buffer, 0, checked((int)copiedLength));
         var text = MsiTextPolicy.Sanitize(rawText, maxScalars);
+        var probeStateIsConsistent =
+            firstStatus == ErrorSuccess && reportedLength == 0
+            || firstStatus == ErrorMoreData && reportedLength > 0;
+        var readStateIsConsistent =
+            secondStatus == ErrorSuccess && secondLength <= maxUtf16Units
+            || secondStatus == ErrorMoreData
+                && secondLength >= checked((uint)buffer.Length);
+        if (!probeStateIsConsistent || !readStateIsConsistent)
+        {
+            return new MsiTextReadResult(
+                text with
+                {
+                    WasTruncated = text.WasTruncated
+                        || secondStatus == ErrorMoreData
+                        || secondLength > maxUtf16Units,
+                },
+                false,
+                "MSI text returned an inconsistent native status and length.",
+                rawText);
+        }
         if (secondStatus == ErrorMoreData || secondLength > maxUtf16Units || text.WasTruncated)
         {
             return new MsiTextReadResult(
@@ -407,7 +447,7 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
     }
 
     private MsiRow ReadRow(
-        SafeMsiRecordHandle record,
+        uint record,
         MsiTableDefinition definition,
         MsiAnalysisLimits limits)
     {
@@ -422,12 +462,12 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
     }
 
     private MsiRecordValue ReadValue(
-        SafeMsiRecordHandle record,
+        uint record,
         uint field,
         MsiColumnDefinition column,
         MsiAnalysisLimits limits)
     {
-        if (native.IsNull(record.DangerousGetHandle(), field))
+        if (native.IsNull(record, field))
         {
             if (!column.IsNullable)
             {
@@ -458,11 +498,11 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
     }
 
     private MsiRecordValue ReadInteger(
-        SafeMsiRecordHandle record,
+        uint record,
         uint field,
         MsiColumnDefinition column)
     {
-        var value = native.GetInteger(record.DangerousGetHandle(), field);
+        var value = native.GetInteger(record, field);
         return value == MsiNullInteger
             ? new MsiRecordValue(
                 MsiValueKind.Null,
@@ -475,12 +515,12 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
     }
 
     private MsiRecordValue ReadString(
-        SafeMsiRecordHandle record,
+        uint record,
         uint field,
         MsiAnalysisLimits limits)
     {
         uint Reader(char[] buffer, ref uint length) =>
-            native.GetString(record.DangerousGetHandle(), field, buffer, ref length);
+            native.GetString(record, field, buffer, ref length);
         var result = ReadText(Reader, limits.MaxTextScalars);
         return new MsiRecordValue(
             MsiValueKind.String,
@@ -493,7 +533,7 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
     }
 
     private MsiSummaryProperty? ReadSummaryProperty(
-        SafeMsiSummaryHandle summary,
+        uint summary,
         int propertyId,
         MsiAnalysisLimits limits)
     {
@@ -503,7 +543,7 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
         var probe = new char[1];
         uint length = 0;
         var status = native.GetSummaryProperty(
-            summary.DangerousGetHandle(),
+            summary,
             checked((uint)propertyId),
             out dataType,
             out integer,
@@ -514,22 +554,45 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
         {
             throw new MsiDatabaseException($"read summary property {propertyId}", status);
         }
-        if (dataType == VariantEmpty) return null;
+        if (dataType == VariantEmpty)
+        {
+            if (status == ErrorSuccess && length == 0) return null;
+
+            return IncompleteSummaryProperty(
+                propertyId,
+                MsiValueKind.Null,
+                $"Summary property {propertyId} returned an inconsistent empty state.");
+        }
         if (!IsExpectedSummaryType(propertyId, dataType))
         {
-            var reason =
-                $"Summary property {propertyId} used unexpected variant type {dataType}.";
-            var unexpected = new MsiRecordValue(
-                MsiValueKind.Null, null, null, null, false, reason);
-            return new MsiSummaryProperty(propertyId, unexpected, false, reason);
+            return IncompleteSummaryProperty(
+                propertyId,
+                MsiValueKind.Null,
+                $"Summary property {propertyId} used unexpected variant type {dataType}.");
         }
         if (dataType is VariantI2 or VariantI4)
         {
+            if (status != ErrorSuccess || length != 0)
+            {
+                return IncompleteSummaryProperty(
+                    propertyId,
+                    MsiValueKind.Integer,
+                    $"Summary property {propertyId} returned an inconsistent integer state.");
+            }
+
             var value = new MsiRecordValue(MsiValueKind.Integer, integer, null, null);
             return new MsiSummaryProperty(propertyId, value, true, null);
         }
         if (dataType == VariantFileTime)
         {
+            if (status != ErrorSuccess || length != 0)
+            {
+                return IncompleteSummaryProperty(
+                    propertyId,
+                    MsiValueKind.FileTime,
+                    $"Summary property {propertyId} returned an inconsistent FILETIME state.");
+            }
+
             if (propertyId == 10)
             {
                 if (fileTime.Value < 0)
@@ -557,7 +620,8 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
                     null,
                     null,
                     null,
-                    Timestamp: DateTimeOffset.FromFileTime(fileTime.Value));
+                    Timestamp: DateTimeOffset.FromFileTime(fileTime.Value)
+                        .ToUniversalTime());
                 return new MsiSummaryProperty(propertyId, value, true, null);
             }
             catch (ArgumentOutOfRangeException)
@@ -568,14 +632,14 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
                 return new MsiSummaryProperty(propertyId, invalid, false, reason);
             }
         }
-        if (dataType is VariantLpstr or VariantLpwstr)
+        if (dataType == VariantLpstr)
         {
             var measuredType = dataType;
             var typeChanged = false;
             uint Reader(char[] buffer, ref uint bufferLength)
             {
                 var readStatus = native.GetSummaryProperty(
-                    summary.DangerousGetHandle(),
+                    summary,
                     checked((uint)propertyId),
                     out dataType,
                     out integer,
@@ -618,7 +682,7 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
     }
 
     private bool KeysMatch(
-        SafeMsiRecordHandle record,
+        uint record,
         MsiTableDefinition definition,
         ImmutableArray<MsiRecordValue> keys,
         CancellationToken cancellationToken)
@@ -650,7 +714,7 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
             StringComparison.Ordinal);
 
     private MemoryStream ReadStream(
-        SafeMsiRecordHandle record,
+        uint record,
         uint field,
         ExtractionBudget budget,
         CancellationToken cancellationToken)
@@ -666,7 +730,7 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
                 var requested = checked((uint)buffer.Length);
                 Check(
                     native.ReadStream(
-                        record.DangerousGetHandle(), field, buffer, ref requested),
+                        record, field, buffer, ref requested),
                     "read MSI stream");
                 if (requested == 0) break;
                 if (requested > checked((uint)buffer.Length))
@@ -692,10 +756,10 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
         }
     }
 
-    private SafeMsiViewHandle OpenView(string fixedQuery)
+    private SafeMsiViewHandle OpenView(uint database, string fixedQuery)
     {
         var status = native.OpenView(
-            handle.DangerousGetHandle(), fixedQuery, out var rawView);
+            database, fixedQuery, out var rawView);
         var view = new SafeMsiViewHandle(native, rawView);
         if (status != ErrorSuccess)
         {
@@ -706,11 +770,11 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
     }
 
     private void ValidateFieldCount(
-        SafeMsiRecordHandle record,
+        uint record,
         MsiTableDefinition definition,
         MsiAnalysisLimits limits)
     {
-        var fieldCount = native.GetFieldCount(record.DangerousGetHandle());
+        var fieldCount = native.GetFieldCount(record);
         if (fieldCount > limits.MaxFieldsPerRecord
             || fieldCount != definition.Columns.Length)
         {
@@ -724,11 +788,21 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
         propertyId switch
         {
             1 => dataType == VariantI2,
-            >= 2 and <= 9 or 18 => dataType is VariantLpstr or VariantLpwstr,
+            >= 2 and <= 9 or 18 => dataType == VariantLpstr,
             >= 10 and <= 13 => dataType == VariantFileTime,
             >= 14 and <= 16 or 19 => dataType == VariantI4,
             _ => false,
         };
+
+    private static MsiSummaryProperty IncompleteSummaryProperty(
+        int propertyId,
+        MsiValueKind kind,
+        string reason)
+    {
+        var value = new MsiRecordValue(
+            kind, null, null, null, false, reason);
+        return new MsiSummaryProperty(propertyId, value, false, reason);
+    }
 
     private void ThrowIfDisposed()
     {
@@ -744,37 +818,37 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
 
     private sealed class SystemMsiNativeApi : IMsiNativeApi
     {
-        public uint OpenDatabaseReadOnly(string path, out nint database) =>
+        public uint OpenDatabaseReadOnly(string path, out uint database) =>
             MsiOpenDatabaseW(path, default, out database);
 
-        public uint OpenView(nint database, string query, out nint view) =>
+        public uint OpenView(uint database, string query, out uint view) =>
             MsiDatabaseOpenViewW(database, query, out view);
 
-        public uint ExecuteView(nint view, nint record) =>
+        public uint ExecuteView(uint view, uint record) =>
             MsiViewExecute(view, record);
 
-        public uint FetchView(nint view, out nint record) =>
+        public uint FetchView(uint view, out uint record) =>
             MsiViewFetch(view, out record);
 
-        public uint CloseView(nint view) => MsiViewClose(view);
+        public uint CloseView(uint view) => MsiViewClose(view);
 
-        public uint GetFieldCount(nint record) => MsiRecordGetFieldCount(record);
+        public uint GetFieldCount(uint record) => MsiRecordGetFieldCount(record);
 
-        public bool IsNull(nint record, uint field) => MsiRecordIsNull(record, field);
+        public bool IsNull(uint record, uint field) => MsiRecordIsNull(record, field);
 
-        public int GetInteger(nint record, uint field) => MsiRecordGetInteger(record, field);
+        public int GetInteger(uint record, uint field) => MsiRecordGetInteger(record, field);
 
-        public uint GetString(nint record, uint field, char[] value, ref uint length) =>
+        public uint GetString(uint record, uint field, char[] value, ref uint length) =>
             MsiRecordGetStringW(record, field, value, ref length);
 
-        public uint ReadStream(nint record, uint field, byte[] buffer, ref uint length) =>
+        public uint ReadStream(uint record, uint field, byte[] buffer, ref uint length) =>
             MsiRecordReadStream(record, field, buffer, ref length);
 
-        public uint GetSummary(nint database, out nint summary) =>
+        public uint GetSummary(uint database, out uint summary) =>
             MsiGetSummaryInformationW(database, null, 0, out summary);
 
         public uint GetSummaryProperty(
-            nint summary,
+            uint summary,
             uint propertyId,
             out uint dataType,
             out int integerValue,
@@ -790,7 +864,7 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
                 value,
                 ref length);
 
-        public uint CloseHandle(nint handle) => MsiCloseHandle(handle);
+        public uint CloseHandle(uint handle) => MsiCloseHandle(handle);
     }
 
     [DllImport(
@@ -802,7 +876,7 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
     private static extern uint MsiOpenDatabaseW(
         [MarshalAs(UnmanagedType.LPWStr)] string path,
         nint persistence,
-        out nint database);
+        out uint database);
 
     [DllImport(
         "msi.dll",
@@ -811,9 +885,9 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
         CallingConvention = CallingConvention.Winapi,
         PreserveSig = true)]
     private static extern uint MsiDatabaseOpenViewW(
-        nint database,
+        uint database,
         [MarshalAs(UnmanagedType.LPWStr)] string query,
-        out nint view);
+        out uint view);
 
     [DllImport(
         "msi.dll",
@@ -821,7 +895,7 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
         CharSet = CharSet.Unicode,
         CallingConvention = CallingConvention.Winapi,
         PreserveSig = true)]
-    private static extern uint MsiViewExecute(nint view, nint record);
+    private static extern uint MsiViewExecute(uint view, uint record);
 
     [DllImport(
         "msi.dll",
@@ -829,7 +903,7 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
         CharSet = CharSet.Unicode,
         CallingConvention = CallingConvention.Winapi,
         PreserveSig = true)]
-    private static extern uint MsiViewFetch(nint view, out nint record);
+    private static extern uint MsiViewFetch(uint view, out uint record);
 
     [DllImport(
         "msi.dll",
@@ -837,7 +911,7 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
         CharSet = CharSet.Unicode,
         CallingConvention = CallingConvention.Winapi,
         PreserveSig = true)]
-    private static extern uint MsiViewClose(nint view);
+    private static extern uint MsiViewClose(uint view);
 
     [DllImport(
         "msi.dll",
@@ -845,7 +919,7 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
         CharSet = CharSet.Unicode,
         CallingConvention = CallingConvention.Winapi,
         PreserveSig = true)]
-    private static extern uint MsiRecordGetFieldCount(nint record);
+    private static extern uint MsiRecordGetFieldCount(uint record);
 
     [DllImport(
         "msi.dll",
@@ -854,7 +928,7 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
         CallingConvention = CallingConvention.Winapi,
         PreserveSig = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool MsiRecordIsNull(nint record, uint field);
+    private static extern bool MsiRecordIsNull(uint record, uint field);
 
     [DllImport(
         "msi.dll",
@@ -862,7 +936,7 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
         CharSet = CharSet.Unicode,
         CallingConvention = CallingConvention.Winapi,
         PreserveSig = true)]
-    private static extern int MsiRecordGetInteger(nint record, uint field);
+    private static extern int MsiRecordGetInteger(uint record, uint field);
 
     [DllImport(
         "msi.dll",
@@ -871,7 +945,7 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
         CallingConvention = CallingConvention.Winapi,
         PreserveSig = true)]
     private static extern uint MsiRecordGetStringW(
-        nint record,
+        uint record,
         uint field,
         [Out, MarshalAs(UnmanagedType.LPArray, ArraySubType = UnmanagedType.U2, SizeParamIndex = 3)]
         char[] value,
@@ -884,7 +958,7 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
         CallingConvention = CallingConvention.Winapi,
         PreserveSig = true)]
     private static extern uint MsiRecordReadStream(
-        nint record,
+        uint record,
         uint field,
         [Out, MarshalAs(UnmanagedType.LPArray, ArraySubType = UnmanagedType.U1, SizeParamIndex = 3)]
         byte[] buffer,
@@ -897,10 +971,10 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
         CallingConvention = CallingConvention.Winapi,
         PreserveSig = true)]
     private static extern uint MsiGetSummaryInformationW(
-        nint database,
+        uint database,
         [MarshalAs(UnmanagedType.LPWStr)] string? databasePath,
         uint updateCount,
-        out nint summary);
+        out uint summary);
 
     [DllImport(
         "msi.dll",
@@ -909,7 +983,7 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
         CallingConvention = CallingConvention.Winapi,
         PreserveSig = true)]
     private static extern uint MsiSummaryInfoGetPropertyW(
-        nint summary,
+        uint summary,
         uint propertyId,
         out uint dataType,
         out int integerValue,
@@ -924,67 +998,101 @@ internal sealed class MsiDatabase : IMsiDatabaseReader
         CharSet = CharSet.Unicode,
         CallingConvention = CallingConvention.Winapi,
         PreserveSig = true)]
-    private static extern uint MsiCloseHandle(nint handle);
+    private static extern uint MsiCloseHandle(uint handle);
 
-    private sealed class SafeMsiDatabaseHandle : SafeHandleZeroOrMinusOneIsInvalid
+    private abstract class MsiSafeHandleBase : SafeHandle
     {
-        private readonly IMsiNativeApi native;
-
-        internal SafeMsiDatabaseHandle(IMsiNativeApi native, nint handle)
-            : base(true)
+        protected MsiSafeHandleBase(uint handle)
+            : base(nint.Zero, true)
         {
-            this.native = native;
-            SetHandle(handle);
+            SetHandle(unchecked((nint)handle));
         }
 
-        protected override bool ReleaseHandle() => native.CloseHandle(handle) == ErrorSuccess;
+        public override bool IsInvalid => handle == nint.Zero;
+
+        internal uint Value => unchecked((uint)handle.ToInt64());
+
+        internal MsiHandleLease AcquireLease() => new(this);
     }
 
-    private sealed class SafeMsiViewHandle : SafeHandleZeroOrMinusOneIsInvalid
+    private sealed class MsiHandleLease : IDisposable
+    {
+        private MsiSafeHandleBase? owner;
+
+        internal MsiHandleLease(MsiSafeHandleBase owner)
+        {
+            var addedReference = false;
+            owner.DangerousAddRef(ref addedReference);
+            ObjectDisposedException.ThrowIf(!addedReference, owner);
+
+            this.owner = owner;
+            Value = owner.Value;
+        }
+
+        internal uint Value { get; }
+
+        public void Dispose()
+        {
+            var owned = Interlocked.Exchange(ref owner, null);
+            owned?.DangerousRelease();
+        }
+    }
+
+    private sealed class SafeMsiDatabaseHandle : MsiSafeHandleBase
     {
         private readonly IMsiNativeApi native;
 
-        internal SafeMsiViewHandle(IMsiNativeApi native, nint handle)
-            : base(true)
+        internal SafeMsiDatabaseHandle(IMsiNativeApi native, uint handle)
+            : base(handle)
         {
             this.native = native;
-            SetHandle(handle);
+        }
+
+        protected override bool ReleaseHandle() => native.CloseHandle(Value) == ErrorSuccess;
+    }
+
+    private sealed class SafeMsiViewHandle : MsiSafeHandleBase
+    {
+        private readonly IMsiNativeApi native;
+
+        internal SafeMsiViewHandle(IMsiNativeApi native, uint handle)
+            : base(handle)
+        {
+            this.native = native;
         }
 
         protected override bool ReleaseHandle()
         {
-            var closeView = native.CloseView(handle);
-            var closeHandle = native.CloseHandle(handle);
+            var closeView = native.CloseView(Value);
+            var closeHandle = native.CloseHandle(Value);
             return closeView == ErrorSuccess && closeHandle == ErrorSuccess;
         }
     }
 
-    private sealed class SafeMsiRecordHandle : SafeHandleZeroOrMinusOneIsInvalid
+    private sealed class SafeMsiRecordHandle : MsiSafeHandleBase
     {
         private readonly IMsiNativeApi native;
 
-        internal SafeMsiRecordHandle(IMsiNativeApi native, nint handle)
-            : base(true)
+        internal SafeMsiRecordHandle(IMsiNativeApi native, uint handle)
+            : base(handle)
         {
             this.native = native;
-            SetHandle(handle);
         }
 
-        protected override bool ReleaseHandle() => native.CloseHandle(handle) == ErrorSuccess;
+        protected override bool ReleaseHandle() => native.CloseHandle(Value) == ErrorSuccess;
     }
 
-    private sealed class SafeMsiSummaryHandle : SafeHandleZeroOrMinusOneIsInvalid
+    private sealed class SafeMsiSummaryHandle : MsiSafeHandleBase
     {
         private readonly IMsiNativeApi native;
 
-        internal SafeMsiSummaryHandle(IMsiNativeApi native, nint handle)
-            : base(true)
+        internal SafeMsiSummaryHandle(IMsiNativeApi native, uint handle)
+            : base(handle)
         {
             this.native = native;
-            SetHandle(handle);
         }
 
-        protected override bool ReleaseHandle() => native.CloseHandle(handle) == ErrorSuccess;
+        protected override bool ReleaseHandle() => native.CloseHandle(Value) == ErrorSuccess;
     }
 }
 

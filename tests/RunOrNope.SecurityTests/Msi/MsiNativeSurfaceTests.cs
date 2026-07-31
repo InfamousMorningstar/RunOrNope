@@ -30,28 +30,86 @@ public sealed class MsiNativeSurfaceTests
         "MsiViewFetch",
     ];
 
-    private static readonly IReadOnlyDictionary<string, string> ExpectedSignatures =
-        new Dictionary<string, string>(StringComparer.Ordinal)
+    private static readonly Dictionary<string, NativeMethodContract> ExpectedContracts =
+        new Dictionary<string, NativeMethodContract>(StringComparer.Ordinal)
         {
-            ["MsiCloseHandle"] = "UInt32(IntPtr)",
-            ["MsiDatabaseOpenViewW"] =
-                "UInt32(IntPtr,String,IntPtr&)",
-            ["MsiGetSummaryInformationW"] =
-                "UInt32(IntPtr,String,UInt32,IntPtr&)",
-            ["MsiOpenDatabaseW"] =
-                "UInt32(String,IntPtr,IntPtr&)",
-            ["MsiRecordGetFieldCount"] = "UInt32(IntPtr)",
-            ["MsiRecordGetInteger"] = "Int32(IntPtr,UInt32)",
-            ["MsiRecordGetStringW"] =
-                "UInt32(IntPtr,UInt32,Char[],UInt32&)",
-            ["MsiRecordIsNull"] = "Boolean(IntPtr,UInt32)",
-            ["MsiRecordReadStream"] =
-                "UInt32(IntPtr,UInt32,Byte[],UInt32&)",
-            ["MsiSummaryInfoGetPropertyW"] =
-                "UInt32(IntPtr,UInt32,UInt32&,Int32&,MsiNativeFileTime&,Char[],UInt32&)",
-            ["MsiViewClose"] = "UInt32(IntPtr)",
-            ["MsiViewExecute"] = "UInt32(IntPtr,IntPtr)",
-            ["MsiViewFetch"] = "UInt32(IntPtr,IntPtr&)",
+            ["MsiCloseHandle"] = Contract(typeof(uint), Parameter(typeof(uint))),
+            ["MsiDatabaseOpenViewW"] = Contract(
+                typeof(uint),
+                Parameter(typeof(uint)),
+                Parameter(typeof(string), marshal: Marshall(UnmanagedType.LPWStr)),
+                Parameter(typeof(uint).MakeByRefType(), isOut: true)),
+            ["MsiGetSummaryInformationW"] = Contract(
+                typeof(uint),
+                Parameter(typeof(uint)),
+                Parameter(typeof(string), marshal: Marshall(UnmanagedType.LPWStr)),
+                Parameter(typeof(uint)),
+                Parameter(typeof(uint).MakeByRefType(), isOut: true)),
+            ["MsiOpenDatabaseW"] = Contract(
+                typeof(uint),
+                Parameter(typeof(string), marshal: Marshall(UnmanagedType.LPWStr)),
+                Parameter(typeof(nint)),
+                Parameter(typeof(uint).MakeByRefType(), isOut: true)),
+            ["MsiRecordGetFieldCount"] = Contract(
+                typeof(uint),
+                Parameter(typeof(uint))),
+            ["MsiRecordGetInteger"] = Contract(
+                typeof(int),
+                Parameter(typeof(uint)),
+                Parameter(typeof(uint))),
+            ["MsiRecordGetStringW"] = Contract(
+                typeof(uint),
+                Parameter(typeof(uint)),
+                Parameter(typeof(uint)),
+                Parameter(
+                    typeof(char[]),
+                    isOut: true,
+                    marshal: Marshall(
+                        UnmanagedType.LPArray,
+                        UnmanagedType.U2,
+                        sizeParameterIndex: 3)),
+                Parameter(typeof(uint).MakeByRefType())),
+            ["MsiRecordIsNull"] = ContractWithReturnMarshal(
+                typeof(bool),
+                Marshall(UnmanagedType.Bool),
+                Parameter(typeof(uint)),
+                Parameter(typeof(uint))),
+            ["MsiRecordReadStream"] = Contract(
+                typeof(uint),
+                Parameter(typeof(uint)),
+                Parameter(typeof(uint)),
+                Parameter(
+                    typeof(byte[]),
+                    isOut: true,
+                    marshal: Marshall(
+                        UnmanagedType.LPArray,
+                        UnmanagedType.U1,
+                        sizeParameterIndex: 3)),
+                Parameter(typeof(uint).MakeByRefType())),
+            ["MsiSummaryInfoGetPropertyW"] = Contract(
+                typeof(uint),
+                Parameter(typeof(uint)),
+                Parameter(typeof(uint)),
+                Parameter(typeof(uint).MakeByRefType(), isOut: true),
+                Parameter(typeof(int).MakeByRefType(), isOut: true),
+                Parameter(typeof(MsiNativeFileTime).MakeByRefType(), isOut: true),
+                Parameter(
+                    typeof(char[]),
+                    isOut: true,
+                    marshal: Marshall(
+                        UnmanagedType.LPArray,
+                        UnmanagedType.U2,
+                        sizeParameterIndex: 6)),
+                Parameter(typeof(uint).MakeByRefType())),
+            ["MsiViewClose"] = Contract(typeof(uint), Parameter(typeof(uint))),
+            ["MsiViewExecute"] = Contract(
+                typeof(uint),
+                Parameter(typeof(uint)),
+                Parameter(typeof(uint))),
+            ["MsiViewFetch"] = Contract(
+                typeof(uint),
+                Parameter(typeof(uint)),
+                Parameter(typeof(uint).MakeByRefType(), isOut: true)),
         };
 
     [Fact]
@@ -94,8 +152,9 @@ public sealed class MsiNativeSurfaceTests
             && pair.Import.CallingConvention == CallingConvention.Winapi
             && pair.Import.PreserveSig
             && pair.Import.ExactSpelling);
-        imports.ToDictionary(pair => pair.Method.Name, pair => Signature(pair.Method))
-            .Should().BeEquivalentTo(ExpectedSignatures);
+        imports.Should().OnlyContain(pair =>
+            ExpectedContracts.ContainsKey(pair.Method.Name)
+            && MatchesNativeContract(pair.Method, ExpectedContracts[pair.Method.Name]));
         imports.SelectMany(pair => pair.Method.GetParameters())
             .Where(parameter => parameter.ParameterType == typeof(string))
             .Select(parameter => parameter.GetCustomAttribute<MarshalAsAttribute>()?.Value)
@@ -141,50 +200,22 @@ public sealed class MsiNativeSurfaceTests
         using var stream = File.OpenRead(typeof(MsiDatabase).Assembly.Location);
         using var pe = new PEReader(stream);
         var metadata = pe.GetMetadataReader();
-        var importTokens = metadata.MethodDefinitions
-            .Where(handle =>
-                (metadata.GetMethodDefinition(handle).Attributes & MethodAttributes.PinvokeImpl) != 0)
-            .Select(handle => MetadataTokens.GetToken(handle))
-            .ToHashSet();
-
-        foreach (var methodHandle in metadata.MethodDefinitions)
-        {
-            var method = metadata.GetMethodDefinition(methodHandle);
-            if (method.RelativeVirtualAddress == 0) continue;
-            var il = pe.GetMethodBody(method.RelativeVirtualAddress).GetILBytes()!;
-            var instructions = Decode(il);
-            instructions.Where(instruction => instruction.OpCode == OpCodes.Calli)
-                .Should().BeEmpty("calli is forbidden");
-            instructions.Where(instruction =>
-                    (instruction.OpCode == OpCodes.Ldftn
-                        || instruction.OpCode == OpCodes.Ldvirtftn
-                        || instruction.OpCode == OpCodes.Jmp)
-                    && instruction.Token is { } token
-                    && importTokens.Contains(token))
-                .Should().BeEmpty("native imports must not be reachable through indirect IL");
-            instructions.Where(instruction =>
-                    instruction.Token is { } token
-                    && importTokens.Contains(token))
-                .Should().OnlyContain(
-                    instruction => instruction.OpCode == OpCodes.Call,
-                    "every compiled reference to a native import must be a direct call");
-        }
-
-        var referencedNames = metadata.TypeReferences
-            .Select(handle => metadata.GetString(metadata.GetTypeReference(handle).Name))
-            .ToArray();
-        referencedNames.Where(name =>
-                name == "NativeLibrary"
-                || name.StartsWith("GetProcAddress", StringComparison.Ordinal)
-                || name.StartsWith("LoadLibrary", StringComparison.Ordinal)
-                || name.StartsWith("GetDelegateForFunctionPointer", StringComparison.Ordinal))
+        typeof(MsiDatabase).Assembly.GetTypes()
+            .SelectMany(type => type.GetMethods(
+                BindingFlags.Instance | BindingFlags.Static
+                | BindingFlags.Public | BindingFlags.NonPublic
+                | BindingFlags.DeclaredOnly))
+            .SelectMany(FindForbiddenRoutes)
+            .Should().BeEmpty();
+        metadata.TypeReferences
+            .Select(handle => metadata.GetTypeReference(handle))
+            .Select(type =>
+                $"{metadata.GetString(type.Namespace)}.{metadata.GetString(type.Name)}")
+            .Where(IsForbiddenQualifiedRoute)
             .Should().BeEmpty();
         metadata.MemberReferences
             .Select(handle => QualifiedMemberName(metadata, handle))
-            .Where(name =>
-                name is "System.Reflection.MethodBase.Invoke"
-                    or "System.Reflection.MethodInfo.CreateDelegate"
-                    or "System.Delegate.CreateDelegate")
+            .Where(IsForbiddenQualifiedRoute)
             .Should().BeEmpty();
         typeof(MsiDatabase).Assembly.GetTypes()
             .SelectMany(type => type.GetMethods(
@@ -193,6 +224,67 @@ public sealed class MsiNativeSurfaceTests
                 .Append(method.ReturnType))
             .Where(ContainsFunctionPointer)
             .Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(nameof(AdversarialRoutes.NativeLibraryRoute))]
+    [InlineData(nameof(AdversarialRoutes.GetProcAddressRoute))]
+    [InlineData(nameof(AdversarialRoutes.LoadLibraryRoute))]
+    [InlineData(nameof(AdversarialRoutes.MarshalDelegateRoute))]
+    [InlineData(nameof(AdversarialRoutes.DynamicInvokeRoute))]
+    [InlineData(nameof(AdversarialRoutes.MethodHandleRoute))]
+    [InlineData(nameof(AdversarialRoutes.InlineTokenRoute))]
+    public void Dynamic_route_guard_rejects_each_adversarial_fixture(string methodName)
+    {
+        var method = typeof(AdversarialRoutes).GetMethod(
+            methodName,
+            BindingFlags.Static | BindingFlags.NonPublic)!;
+
+        FindForbiddenRoutes(method).Should().NotBeEmpty();
+    }
+
+    [Theory]
+    [InlineData(nameof(AdversarialSignatures.HandleWidthDrift), "MsiCloseHandle")]
+    [InlineData(nameof(AdversarialSignatures.OutDirectionDrift), "MsiViewFetch")]
+    [InlineData(nameof(AdversarialSignatures.StringMarshalDrift), "MsiOpenDatabaseW")]
+    [InlineData(nameof(AdversarialSignatures.ArrayDirectionDrift), "MsiRecordGetStringW")]
+    [InlineData(nameof(AdversarialSignatures.ReturnMarshalDrift), "MsiRecordIsNull")]
+    public void Exact_signature_guard_rejects_width_direction_and_marshal_drift(
+        string methodName,
+        string contractName)
+    {
+        var method = typeof(AdversarialSignatures).GetMethod(
+            methodName,
+            BindingFlags.Static | BindingFlags.NonPublic)!;
+
+        MatchesNativeContract(method, ExpectedContracts[contractName])
+            .Should().BeFalse();
+    }
+
+    [Fact]
+    public void Native_filetime_layout_is_exactly_two_uint_fields()
+    {
+        typeof(MsiNativeFileTime).StructLayoutAttribute!.Value
+            .Should().Be(LayoutKind.Sequential);
+        Marshal.SizeOf<MsiNativeFileTime>().Should().Be(8);
+        typeof(MsiNativeFileTime).GetFields(
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+            .Select(field => (field.Name, field.FieldType, Offset: Marshal.OffsetOf<MsiNativeFileTime>(field.Name)))
+            .Should().Equal(
+                ("Low", typeof(uint), (nint)0),
+                ("High", typeof(uint), (nint)4));
+    }
+
+    [Fact]
+    public void Oversized_stream_key_length_gate_precedes_scalar_sanitizer()
+    {
+        var hasCompiledLengthGate = typeof(MsiDatabase).Assembly.GetTypes()
+            .SelectMany(type => type.GetMethods(
+                BindingFlags.Instance | BindingFlags.Static
+                | BindingFlags.Public | BindingFlags.NonPublic))
+            .Any(HasLengthGateBeforeSanitizer);
+
+        hasCompiledLengthGate.Should().BeTrue();
     }
 
     [Fact]
@@ -285,7 +377,7 @@ public sealed class MsiNativeSurfaceTests
             "SafeMsiSummaryHandle",
             "SafeMsiViewHandle");
         handleTypes.Should().OnlyContain(
-            type => type.BaseType!.Name == "SafeHandleZeroOrMinusOneIsInvalid");
+            type => type.BaseType!.Name == "MsiSafeHandleBase");
         handleTypes.Should().OnlyContain(type =>
             type.GetFields(BindingFlags.Instance | BindingFlags.NonPublic)
                 .Count(field => field.FieldType == typeof(IMsiNativeApi)) == 1);
@@ -314,8 +406,224 @@ public sealed class MsiNativeSurfaceTests
         }
     }
 
-    private static string Signature(MethodInfo method) =>
-        $"{method.ReturnType.Name}({string.Join(",", method.GetParameters().Select(parameter => parameter.ParameterType.Name))})";
+    private static NativeMethodContract Contract(
+        Type returnType,
+        params NativeParameterContract[] parameters) =>
+        new(returnType, null, parameters);
+
+    private static NativeMethodContract ContractWithReturnMarshal(
+        Type returnType,
+        NativeMarshalContract returnMarshal,
+        params NativeParameterContract[] parameters) =>
+        new(returnType, returnMarshal, parameters);
+
+    private static NativeParameterContract Parameter(
+        Type type,
+        bool isOut = false,
+        bool isIn = false,
+        NativeMarshalContract? marshal = null) =>
+        new(type, isOut, isIn, marshal);
+
+    private static NativeMarshalContract Marshall(
+        UnmanagedType value,
+        UnmanagedType arraySubType = 0,
+        short sizeParameterIndex = 0) =>
+        new(
+            value,
+            arraySubType,
+            sizeParameterIndex,
+            0,
+            null,
+            null,
+            null,
+            0,
+            VarEnum.VT_EMPTY,
+            null);
+
+    private static bool MatchesNativeContract(
+        MethodInfo method,
+        NativeMethodContract contract)
+    {
+        if (method.ReturnType != contract.ReturnType
+            || MarshalShape(method.ReturnParameter) != contract.ReturnMarshal
+            || method.ReturnParameter.GetRequiredCustomModifiers().Length != 0
+            || method.ReturnParameter.GetOptionalCustomModifiers().Length != 0)
+        {
+            return false;
+        }
+
+        var parameters = method.GetParameters();
+        if (parameters.Length != contract.Parameters.Count) return false;
+        for (var index = 0; index < parameters.Length; index++)
+        {
+            var actual = parameters[index];
+            var expected = contract.Parameters[index];
+            if (actual.ParameterType != expected.Type
+                || actual.IsOut != expected.IsOut
+                || actual.IsIn != expected.IsIn
+                || MarshalShape(actual) != expected.Marshal
+                || actual.GetRequiredCustomModifiers().Length != 0
+                || actual.GetOptionalCustomModifiers().Length != 0)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static NativeMarshalContract? MarshalShape(ParameterInfo parameter)
+    {
+        var attribute = parameter.GetCustomAttribute<MarshalAsAttribute>();
+        return attribute is null
+            ? null
+            : new NativeMarshalContract(
+                attribute.Value,
+                attribute.ArraySubType,
+                attribute.SizeParamIndex,
+                attribute.SizeConst,
+                attribute.MarshalType,
+                attribute.MarshalTypeRef,
+                attribute.MarshalCookie,
+                attribute.IidParameterIndex,
+                attribute.SafeArraySubType,
+                attribute.SafeArrayUserDefinedSubType);
+    }
+
+    private static IReadOnlyList<string> FindForbiddenRoutes(MethodInfo method)
+    {
+        var body = method.GetMethodBody();
+        if (body is null) return [];
+
+        var forbidden = new List<string>();
+        var typeArguments = method.DeclaringType?.GetGenericArguments();
+        var methodArguments = method.IsGenericMethod
+            ? method.GetGenericArguments()
+            : null;
+        foreach (var instruction in Decode(body.GetILAsByteArray()!))
+        {
+            if (instruction.OpCode == OpCodes.Calli)
+            {
+                forbidden.Add($"{method.DeclaringType?.FullName}.{method.Name}:calli");
+                continue;
+            }
+            if (instruction.Token is not { } token) continue;
+
+            MemberInfo? member;
+            try
+            {
+                member = method.Module.ResolveMember(
+                    token,
+                    typeArguments,
+                    methodArguments);
+            }
+            catch (ArgumentException)
+            {
+                continue;
+            }
+
+            if (member is MethodInfo imported
+                && imported.GetCustomAttribute<DllImportAttribute>() is not null
+                && instruction.OpCode != OpCodes.Call)
+            {
+                forbidden.Add(
+                    $"{method.DeclaringType?.FullName}.{method.Name}:" +
+                    $"{instruction.OpCode.Name}:{QualifiedMemberName(imported)}");
+            }
+
+            var qualified = member switch
+            {
+                Type type => type.FullName ?? type.Name,
+                null => string.Empty,
+                _ => QualifiedMemberName(member),
+            };
+            if (IsForbiddenQualifiedRoute(qualified))
+            {
+                forbidden.Add(
+                    $"{method.DeclaringType?.FullName}.{method.Name}:" +
+                    $"{instruction.OpCode.Name}:{qualified}");
+            }
+        }
+
+        return forbidden;
+    }
+
+    private static string QualifiedMemberName(MemberInfo member) =>
+        $"{member.DeclaringType?.FullName}.{member.Name}";
+
+    private static bool HasLengthGateBeforeSanitizer(MethodInfo method)
+    {
+        var body = method.GetMethodBody();
+        if (body is null) return false;
+
+        var instructions = Decode(body.GetILAsByteArray()!);
+        var resolved = instructions
+            .Select(instruction => (
+                instruction,
+                member: instruction.Token is { } token
+                    ? ResolveMember(method, token)
+                    : null))
+            .ToArray();
+        var lengthIndex = Array.FindIndex(
+            resolved,
+            item => item.member is MethodInfo target
+                && target.DeclaringType == typeof(string)
+                && target.Name == "get_Length");
+        var sanitizerIndex = Array.FindIndex(
+            resolved,
+            item => item.member is MethodInfo target
+                && target.DeclaringType == typeof(MsiTextPolicy)
+                && target.Name == nameof(MsiTextPolicy.Sanitize));
+        var readsRawIdentity = resolved.Any(
+            item => item.member is MethodInfo target
+                && target.DeclaringType == typeof(MsiRecordValue)
+                && target.Name == "get_Identity");
+        return readsRawIdentity
+            && lengthIndex >= 0
+            && sanitizerIndex > lengthIndex
+            && resolved[(lengthIndex + 1)..sanitizerIndex]
+                .Any(item =>
+                    item.instruction.OpCode.FlowControl == FlowControl.Cond_Branch);
+    }
+
+    private static MemberInfo? ResolveMember(MethodInfo method, int token)
+    {
+        try
+        {
+            return method.Module.ResolveMember(
+                token,
+                method.DeclaringType?.GetGenericArguments(),
+                method.IsGenericMethod ? method.GetGenericArguments() : null);
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    private static bool IsForbiddenQualifiedRoute(string qualified)
+    {
+        if (qualified == "System.Runtime.InteropServices.NativeLibrary"
+            || qualified.StartsWith(
+                "System.Runtime.InteropServices.NativeLibrary.",
+                StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        var separator = qualified.LastIndexOf('.');
+        var memberName = separator >= 0 ? qualified[(separator + 1)..] : qualified;
+        return memberName.StartsWith("GetProcAddress", StringComparison.Ordinal)
+            || memberName.StartsWith("LoadLibrary", StringComparison.Ordinal)
+            || memberName.StartsWith(
+                "GetDelegateForFunctionPointer",
+                StringComparison.Ordinal)
+            || qualified is "System.Delegate.DynamicInvoke"
+                or "System.RuntimeMethodHandle.GetFunctionPointer"
+                or "System.Reflection.MethodBase.Invoke"
+                or "System.Reflection.MethodInfo.CreateDelegate"
+                or "System.Delegate.CreateDelegate";
+    }
 
     private static string QualifiedMemberName(MetadataReader metadata, MemberReferenceHandle handle)
     {
@@ -380,7 +688,12 @@ public sealed class MsiNativeSurfaceTests
                     4 + BitConverter.ToInt32(il, offset) * 4),
                 _ => throw new InvalidDataException($"Unknown IL operand type {opcode.OperandType}."),
             };
-            if (opcode.OperandType is OperandType.InlineMethod or OperandType.InlineSig)
+            if (opcode.OperandType is OperandType.InlineField
+                or OperandType.InlineMethod
+                or OperandType.InlineSig
+                or OperandType.InlineString
+                or OperandType.InlineTok
+                or OperandType.InlineType)
             {
                 token = BitConverter.ToInt32(il, offset);
             }
@@ -392,6 +705,83 @@ public sealed class MsiNativeSurfaceTests
     }
 
     private sealed record IlInstruction(int Offset, OpCode OpCode, int? Token);
+
+    private sealed record NativeMethodContract(
+        Type ReturnType,
+        NativeMarshalContract? ReturnMarshal,
+        IReadOnlyList<NativeParameterContract> Parameters);
+
+    private sealed record NativeParameterContract(
+        Type Type,
+        bool IsOut,
+        bool IsIn,
+        NativeMarshalContract? Marshal);
+
+    private sealed record NativeMarshalContract(
+        UnmanagedType Value,
+        UnmanagedType ArraySubType,
+        short SizeParamIndex,
+        int SizeConst,
+        string? MarshalType,
+        Type? MarshalTypeRef,
+        string? MarshalCookie,
+        int IidParameterIndex,
+        VarEnum SafeArraySubType,
+        Type? SafeArrayUserDefinedSubType);
+
+    private static class AdversarialRoutes
+    {
+        internal static nint NativeLibraryRoute() =>
+            NativeLibrary.GetExport(nint.Zero, "benign-test-symbol");
+
+        internal static nint GetProcAddressRoute() =>
+            AdversarialNamedResolver.GetProcAddress(nint.Zero, "benign-test-symbol");
+
+        internal static nint LoadLibraryRoute() =>
+            AdversarialNamedResolver.LoadLibraryW("benign-test-library");
+
+        internal static Delegate MarshalDelegateRoute() =>
+            Marshal.GetDelegateForFunctionPointer<Action>(nint.Zero);
+
+        internal static object? DynamicInvokeRoute(Delegate callback) =>
+            callback.DynamicInvoke();
+
+        internal static nint MethodHandleRoute(MethodInfo method) =>
+            method.MethodHandle.GetFunctionPointer();
+
+        internal static Type InlineTokenRoute() => typeof(NativeLibrary);
+    }
+
+    private static class AdversarialNamedResolver
+    {
+        internal static nint GetProcAddress(nint module, string symbol) => module;
+        internal static nint LoadLibraryW(string path) => nint.Zero;
+    }
+
+    private static class AdversarialSignatures
+    {
+        internal static uint HandleWidthDrift(nint handle) => 0;
+
+        internal static uint OutDirectionDrift(uint view, ref uint record) => 0;
+
+        internal static uint StringMarshalDrift(
+            [MarshalAs(UnmanagedType.LPStr)] string path,
+            nint persistence,
+            out uint database)
+        {
+            database = 0;
+            return 0;
+        }
+
+        internal static uint ArrayDirectionDrift(
+            uint record,
+            uint field,
+            [MarshalAs(UnmanagedType.LPArray, ArraySubType = UnmanagedType.U2, SizeParamIndex = 3)]
+            char[] value,
+            ref uint length) => 0;
+
+        internal static bool ReturnMarshalDrift(uint record, uint field) => false;
+    }
 
     private sealed class FunctionPointerSignatureProvider
         : ISignatureTypeProvider<bool, object?>

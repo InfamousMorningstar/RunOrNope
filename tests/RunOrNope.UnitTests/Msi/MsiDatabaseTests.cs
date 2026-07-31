@@ -25,6 +25,29 @@ public sealed class MsiDatabaseTests
     }
 
     [Fact]
+    public void Every_native_handle_parameter_is_exactly_unsigned_32_bit()
+    {
+        var handleNames = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "database",
+            "view",
+            "record",
+            "summary",
+            "handle",
+        };
+        var handleParameters = typeof(IMsiNativeApi).GetMethods()
+            .SelectMany(method => method.GetParameters())
+            .Where(parameter => handleNames.Contains(parameter.Name!))
+            .ToArray();
+
+        handleParameters.Should().NotBeEmpty();
+        handleParameters.Should().OnlyContain(parameter =>
+            parameter.ParameterType == typeof(uint)
+            || parameter.ParameterType.IsByRef
+                && parameter.ParameterType.GetElementType() == typeof(uint));
+    }
+
+    [Fact]
     public void Open_view_failure_closes_the_returned_view_and_database_handles()
     {
         var native = new RecordingMsiNativeApi { OpenViewStatus = 5 };
@@ -52,6 +75,67 @@ public sealed class MsiDatabaseTests
         native.Events.Should().ContainInOrder("open:synthetic.msi:11", "close:11");
     }
 
+    [Theory]
+    [InlineData("database")]
+    [InlineData("view")]
+    [InlineData("record")]
+    [InlineData("summary")]
+    public void Failure_releases_every_nonzero_uint_handle_pattern(string handleKind)
+    {
+        const uint allBitsSet = uint.MaxValue;
+        var native = new RecordingMsiNativeApi
+        {
+            DatabaseHandle = handleKind == "database" ? allBitsSet : 11,
+            ViewHandle = handleKind == "view" ? allBitsSet : 22,
+            FetchRecordHandle = handleKind == "record" ? allBitsSet : 0,
+            SummaryHandle = handleKind == "summary" ? allBitsSet : 33,
+            OpenStatus = handleKind == "database" ? 5u : 0,
+            OpenViewStatus = handleKind == "view" ? 5u : 0,
+            FetchStatus = handleKind == "record" ? 5u : 259,
+            SummaryStatus = handleKind == "summary" ? 5u : 0,
+        };
+
+        MsiDatabase? database = null;
+        Action action;
+        if (handleKind == "database")
+        {
+            action = () =>
+            {
+                _ = MsiDatabase.OpenReadOnly("synthetic.msi", native);
+            };
+        }
+        else
+        {
+            database = MsiDatabase.OpenReadOnly("synthetic.msi", native);
+            action = handleKind switch
+            {
+                "view" or "record" => () =>
+                {
+                    _ = database.Query(
+                        MsiTables.FixtureValues,
+                        [],
+                        MsiAnalysisLimits.Default,
+                        TestContext.Current.CancellationToken).ToArray();
+                },
+                "summary" => () =>
+                {
+                    _ = database.ReadSummary(
+                        MsiAnalysisLimits.Default,
+                        TestContext.Current.CancellationToken);
+                },
+                _ => throw new InvalidOperationException(),
+            };
+        }
+
+        action.Should().Throw<MsiDatabaseException>();
+        database?.Dispose();
+        if (handleKind == "view")
+        {
+            native.Events.Should().Contain($"close-view:{allBitsSet}");
+        }
+        native.Events.Should().Contain($"close:{allBitsSet}");
+    }
+
     [Fact]
     public void Summary_open_failure_closes_the_returned_summary_and_database_handles()
     {
@@ -73,7 +157,7 @@ public sealed class MsiDatabaseTests
         var native = new RecordingMsiNativeApi
         {
             FetchStatus = 5,
-            FetchRecord = 44,
+            FetchRecordHandle = 44,
         };
         using var database = new MsiDatabaseFactory(native).OpenReadOnly("synthetic.msi");
 
@@ -85,6 +169,88 @@ public sealed class MsiDatabaseTests
 
         action.Should().Throw<MsiDatabaseException>().Which.NativeStatus.Should().Be(5);
         database.Dispose();
+        native.Events.Should().ContainInOrder(
+            "close:44",
+            "close-view:22",
+            "close:22",
+            "close:11");
+    }
+
+    [Fact]
+    public void Deferred_query_enumerated_after_database_disposal_fails_before_native_work()
+    {
+        var native = new RecordingMsiNativeApi
+        {
+            RowsBeforeNoMore = 1,
+            FieldCount = 4,
+        };
+        var database = MsiDatabase.OpenReadOnly("synthetic.msi", native);
+        var rows = database.Query(
+            MsiTables.FixtureValues,
+            [],
+            MsiAnalysisLimits.Default,
+            TestContext.Current.CancellationToken);
+        database.Dispose();
+        var eventsAfterDispose = native.Events.ToArray();
+
+        var action = () => rows.ToArray();
+
+        action.Should().Throw<ObjectDisposedException>();
+        native.Events.Should().Equal(eventsAfterDispose);
+    }
+
+    [Fact]
+    public void Active_query_enumerator_holds_database_open_until_view_cleanup()
+    {
+        var native = new RecordingMsiNativeApi
+        {
+            RowsBeforeNoMore = 2,
+            FieldCount = 4,
+        };
+        var database = MsiDatabase.OpenReadOnly("synthetic.msi", native);
+        using var enumerator = database.Query(
+                MsiTables.FixtureValues,
+                [],
+                MsiAnalysisLimits.Default,
+                TestContext.Current.CancellationToken)
+            .GetEnumerator();
+        enumerator.MoveNext().Should().BeTrue();
+
+        database.Dispose();
+
+        native.Events.Should().NotContain("close:11");
+        enumerator.MoveNext().Should().BeTrue();
+        enumerator.Dispose();
+        native.Events.Should().ContainInOrder(
+            "close:44",
+            "close-view:22",
+            "close:22",
+            "close:11");
+    }
+
+    [Fact]
+    public void Query_cancellation_releases_record_and_view_before_database_lease()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var native = new RecordingMsiNativeApi
+        {
+            RowsBeforeNoMore = 2,
+            FieldCount = 4,
+        };
+        var database = MsiDatabase.OpenReadOnly("synthetic.msi", native);
+        using var enumerator = database.Query(
+                MsiTables.FixtureValues,
+                [],
+                MsiAnalysisLimits.Default,
+                cancellation.Token)
+            .GetEnumerator();
+        enumerator.MoveNext().Should().BeTrue();
+        database.Dispose();
+        cancellation.Cancel();
+
+        var action = () => enumerator.MoveNext();
+
+        action.Should().Throw<OperationCanceledException>();
         native.Events.Should().ContainInOrder(
             "close:44",
             "close-view:22",
@@ -105,6 +271,115 @@ public sealed class MsiDatabaseTests
 
         property.IsComplete.Should().BeFalse();
         property.IncompleteReason.Should().Contain("type changed");
+    }
+
+    [Theory]
+    [InlineData(0u, 4u, 0u, 4u)]
+    [InlineData(234u, 0u, 0u, 0u)]
+    public void Contradictory_record_string_probe_state_is_incomplete(
+        uint probeStatus,
+        uint probeLength,
+        uint readStatus,
+        uint readLength)
+    {
+        var call = 0;
+        uint Reader(char[] buffer, ref uint length)
+        {
+            call++;
+            if (call == 1)
+            {
+                length = probeLength;
+                return probeStatus;
+            }
+
+            "text".AsSpan(0, checked((int)Math.Min(readLength, 4))).CopyTo(buffer);
+            length = readLength;
+            return readStatus;
+        }
+
+        var result = MsiDatabase.ReadText(Reader, 32);
+
+        call.Should().Be(2);
+        result.IsComplete.Should().BeFalse();
+        result.IncompleteReason.Should().Contain("inconsistent");
+    }
+
+    [Fact]
+    public void Summary_more_data_with_empty_variant_is_incomplete_not_absent()
+    {
+        var native = new RecordingMsiNativeApi
+        {
+            ConfiguredSummaryPropertyId = 2,
+            SummaryProbeStatus = 234,
+            SummaryProbeType = 0,
+            SummaryProbeLength = 1,
+        };
+        using var database = MsiDatabase.OpenReadOnly("synthetic.msi", native);
+
+        var property = database.ReadSummary(
+                MsiAnalysisLimits.Default,
+                TestContext.Current.CancellationToken)
+            .Single(item => item.PropertyId == 2);
+
+        property.IsComplete.Should().BeFalse();
+        property.IncompleteReason.Should().Contain("inconsistent");
+    }
+
+    [Theory]
+    [InlineData(14u, 3u, 234u, 0u)]
+    [InlineData(14u, 3u, 0u, 1u)]
+    [InlineData(12u, 64u, 234u, 0u)]
+    [InlineData(12u, 64u, 0u, 1u)]
+    public void Scalar_summary_types_reject_inconsistent_status_or_length(
+        uint propertyId,
+        uint dataType,
+        uint status,
+        uint length)
+    {
+        var native = new RecordingMsiNativeApi
+        {
+            ConfiguredSummaryPropertyId = propertyId,
+            SummaryProbeStatus = status,
+            SummaryProbeType = dataType,
+            SummaryProbeLength = length,
+            SummaryProbeInteger = 7,
+            SummaryProbeFileTime = new DateTimeOffset(
+                2025, 3, 4, 5, 6, 7, TimeSpan.Zero).ToFileTime(),
+        };
+        using var database = MsiDatabase.OpenReadOnly("synthetic.msi", native);
+
+        var property = database.ReadSummary(
+                MsiAnalysisLimits.Default,
+                TestContext.Current.CancellationToken)
+            .Single(item => item.PropertyId == checked((int)propertyId));
+
+        property.IsComplete.Should().BeFalse();
+        property.IncompleteReason.Should().Contain("inconsistent");
+    }
+
+    [Fact]
+    public void Summary_lpwstr_variant_is_incomplete_for_string_property()
+    {
+        var native = new RecordingMsiNativeApi
+        {
+            ConfiguredSummaryPropertyId = 2,
+            SummaryProbeStatus = 234,
+            SummaryProbeType = 31,
+            SummaryProbeLength = 4,
+            SummaryReadStatus = 0,
+            SummaryReadType = 31,
+            SummaryReadLength = 4,
+            SummaryText = "text",
+        };
+        using var database = MsiDatabase.OpenReadOnly("synthetic.msi", native);
+
+        var property = database.ReadSummary(
+                MsiAnalysisLimits.Default,
+                TestContext.Current.CancellationToken)
+            .Single(item => item.PropertyId == 2);
+
+        property.IsComplete.Should().BeFalse();
+        property.IncompleteReason.Should().Contain("unexpected variant type 31");
     }
 
     [Fact]
@@ -168,6 +443,32 @@ public sealed class MsiDatabaseTests
             TestContext.Current.CancellationToken);
 
         action.Should().Throw<MsiDataIncompleteException>().WithMessage("*complete bounded*");
+        native.Events.Should().NotContain(item =>
+            item.StartsWith("open-view:", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Oversized_caller_stream_key_is_rejected_by_utf16_length_before_native_work()
+    {
+        var native = new RecordingMsiNativeApi();
+        using var database = MsiDatabase.OpenReadOnly("synthetic.msi", native);
+        var identity = new string(
+            'x',
+            checked(MsiAnalysisLimits.Default.MaxTextScalars * 2) + 1);
+        var oversized = new MsiRecordValue(
+            MsiValueKind.String,
+            null,
+            null,
+            null,
+            Identity: identity);
+
+        var action = () => database.OpenStream(
+            MsiTables.FixtureStreams,
+            [oversized],
+            new ExtractionBudget(),
+            TestContext.Current.CancellationToken);
+
+        action.Should().Throw<MsiDataIncompleteException>().WithMessage("*bounded*");
         native.Events.Should().NotContain(item =>
             item.StartsWith("open-view:", StringComparison.Ordinal));
     }
@@ -369,7 +670,7 @@ public sealed class MsiDatabaseTests
             }
 
             length = 8;
-            return 234;
+            return 0;
         }
 
         var result = MsiDatabase.ReadText(Reader, 12_288);
@@ -595,6 +896,7 @@ public sealed class MsiDatabaseTests
         var timestampProperty = property.Value.GetType().GetProperty("Timestamp");
         timestampProperty.Should().NotBeNull();
         timestampProperty!.GetValue(property.Value).Should().Be(timestamp);
+        property.Value.Timestamp!.Value.Offset.Should().Be(TimeSpan.Zero);
     }
 
     [Fact]
@@ -673,8 +975,21 @@ public sealed class MsiDatabaseTests
         internal uint OpenStatus { get; init; }
         internal uint SummaryStatus { get; init; }
         internal uint FetchStatus { get; init; } = 259;
-        internal nint FetchRecord { get; init; }
+        internal uint DatabaseHandle { get; init; } = 11;
+        internal uint ViewHandle { get; init; } = 22;
+        internal uint FetchRecordHandle { get; init; }
+        internal uint SummaryHandle { get; init; } = 33;
         internal bool ChangeSummaryTypeOnRead { get; init; }
+        internal uint? ConfiguredSummaryPropertyId { get; init; }
+        internal uint SummaryProbeStatus { get; init; }
+        internal uint SummaryProbeType { get; init; }
+        internal uint SummaryProbeLength { get; init; }
+        internal int SummaryProbeInteger { get; init; }
+        internal long SummaryProbeFileTime { get; init; }
+        internal uint SummaryReadStatus { get; init; }
+        internal uint SummaryReadType { get; init; }
+        internal uint SummaryReadLength { get; init; }
+        internal string SummaryText { get; init; } = string.Empty;
         internal int RowsBeforeNoMore { get; init; }
         internal uint FieldCount { get; init; } = 4;
         internal string ActualKey { get; init; } = string.Empty;
@@ -688,27 +1003,27 @@ public sealed class MsiDatabaseTests
         internal int StreamReadCalls { get; private set; }
         internal List<string> Events { get; } = [];
 
-        public uint OpenDatabaseReadOnly(string path, out nint database)
+        public uint OpenDatabaseReadOnly(string path, out uint database)
         {
-            database = 11;
-            Events.Add($"open:{path}:11");
+            database = DatabaseHandle;
+            Events.Add($"open:{path}:{DatabaseHandle}");
             return OpenStatus;
         }
 
-        public uint OpenView(nint database, string query, out nint view)
+        public uint OpenView(uint database, string query, out uint view)
         {
-            Events.Add($"open-view:{database}:22:{query}");
-            view = 22;
+            Events.Add($"open-view:{database}:{ViewHandle}:{query}");
+            view = ViewHandle;
             return OpenViewStatus;
         }
 
-        public uint ExecuteView(nint view, nint record)
+        public uint ExecuteView(uint view, uint record)
         {
             Events.Add($"execute:{view}:{record}");
             return 0;
         }
 
-        public uint FetchView(nint view, out nint record)
+        public uint FetchView(uint view, out uint record)
         {
             FetchCalls++;
             if (RowsBeforeNoMore > 0)
@@ -724,24 +1039,24 @@ public sealed class MsiDatabaseTests
                 return 259;
             }
 
-            Events.Add($"fetch:{view}:{FetchRecord}");
-            record = FetchRecord;
+            Events.Add($"fetch:{view}:{FetchRecordHandle}");
+            record = FetchRecordHandle;
             return FetchStatus;
         }
 
-        public uint CloseView(nint view)
+        public uint CloseView(uint view)
         {
             Events.Add($"close-view:{view}");
             return 0;
         }
 
-        public uint GetFieldCount(nint record) => FieldCount;
+        public uint GetFieldCount(uint record) => FieldCount;
 
-        public bool IsNull(nint record, uint field) => false;
+        public bool IsNull(uint record, uint field) => false;
 
-        public int GetInteger(nint record, uint field) => 0;
+        public int GetInteger(uint record, uint field) => 0;
 
-        public uint GetString(nint record, uint field, char[] value, ref uint length)
+        public uint GetString(uint record, uint field, char[] value, ref uint length)
         {
             keyCalls++;
             if ((keyCalls & 1) == 1)
@@ -754,11 +1069,10 @@ public sealed class MsiDatabaseTests
             length = ChangeKeyOnRead
                 ? checked((uint)ActualKey.Length + 1)
                 : checked((uint)ActualKey.Length);
-            if (ChangeKeyOnRead) return 234;
             return 0;
         }
 
-        public uint ReadStream(nint record, uint field, byte[] buffer, ref uint length)
+        public uint ReadStream(uint record, uint field, byte[] buffer, ref uint length)
         {
             StreamReadCalls++;
             if (StreamStatus != 0) return StreamStatus;
@@ -779,15 +1093,15 @@ public sealed class MsiDatabaseTests
             return 0;
         }
 
-        public uint GetSummary(nint database, out nint summary)
+        public uint GetSummary(uint database, out uint summary)
         {
-            Events.Add($"open-summary:{database}:33");
-            summary = 33;
+            Events.Add($"open-summary:{database}:{SummaryHandle}");
+            summary = SummaryHandle;
             return SummaryStatus;
         }
 
         public uint GetSummaryProperty(
-            nint summary,
+            uint summary,
             uint propertyId,
             out uint dataType,
             out int integerValue,
@@ -797,6 +1111,24 @@ public sealed class MsiDatabaseTests
         {
             integerValue = 0;
             fileTime = default;
+            if (propertyId == ConfiguredSummaryPropertyId)
+            {
+                summaryPropertyTwoCalls++;
+                var reading = summaryPropertyTwoCalls > 1;
+                dataType = reading ? SummaryReadType : SummaryProbeType;
+                integerValue = SummaryProbeInteger;
+                fileTime.Low = unchecked((uint)SummaryProbeFileTime);
+                fileTime.High = unchecked((uint)(SummaryProbeFileTime >> 32));
+                length = reading ? SummaryReadLength : SummaryProbeLength;
+                if (reading)
+                {
+                    SummaryText.AsSpan(
+                            0,
+                            checked((int)Math.Min(length, (uint)SummaryText.Length)))
+                        .CopyTo(value);
+                }
+                return reading ? SummaryReadStatus : SummaryProbeStatus;
+            }
             if (propertyId == 10 && EditDurationTicks is { } duration)
             {
                 dataType = 64;
@@ -827,10 +1159,11 @@ public sealed class MsiDatabaseTests
             return 0;
         }
 
-        public uint CloseHandle(nint handle)
+        public uint CloseHandle(uint handle)
         {
             Events.Add($"close:{handle}");
             return 0;
         }
+
     }
 }
