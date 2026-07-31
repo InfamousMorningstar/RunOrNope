@@ -200,12 +200,8 @@ public sealed class MsiNativeSurfaceTests
         using var stream = File.OpenRead(typeof(MsiDatabase).Assembly.Location);
         using var pe = new PEReader(stream);
         var metadata = pe.GetMetadataReader();
-        typeof(MsiDatabase).Assembly.GetTypes()
-            .SelectMany(type => type.GetMethods(
-                BindingFlags.Instance | BindingFlags.Static
-                | BindingFlags.Public | BindingFlags.NonPublic
-                | BindingFlags.DeclaredOnly))
-            .SelectMany(FindForbiddenRoutes)
+        var catalog = ReadMethodCatalog(pe, metadata);
+        FindForbiddenRoutes(metadata, catalog)
             .Should().BeEmpty();
         metadata.TypeReferences
             .Select(handle => metadata.GetTypeReference(handle))
@@ -214,7 +210,7 @@ public sealed class MsiNativeSurfaceTests
             .Where(IsForbiddenQualifiedRoute)
             .Should().BeEmpty();
         metadata.MemberReferences
-            .Select(handle => QualifiedMemberName(metadata, handle))
+            .Select(handle => QualifiedMemberName(metadata, catalog, handle))
             .Where(IsForbiddenQualifiedRoute)
             .Should().BeEmpty();
         typeof(MsiDatabase).Assembly.GetTypes()
@@ -236,11 +232,59 @@ public sealed class MsiNativeSurfaceTests
     [InlineData(nameof(AdversarialRoutes.InlineTokenRoute))]
     public void Dynamic_route_guard_rejects_each_adversarial_fixture(string methodName)
     {
-        var method = typeof(AdversarialRoutes).GetMethod(
-            methodName,
-            BindingFlags.Static | BindingFlags.NonPublic)!;
+        var forbidden = FindForbiddenRoutes(
+            typeof(MsiNativeSurfaceTests).Assembly.Location);
 
-        FindForbiddenRoutes(method).Should().NotBeEmpty();
+        forbidden.Should().Contain(route =>
+            route.TypeName.EndsWith(
+                "MsiNativeSurfaceTests+AdversarialRoutes",
+                StringComparison.Ordinal)
+            && route.MethodName == methodName);
+    }
+
+    [Fact]
+    public void Metadata_body_catalog_includes_constructors_and_module_scope()
+    {
+        var assemblyPath = typeof(MsiNativeSurfaceTests).Assembly.Location;
+        var catalog = ReadMethodCatalog(assemblyPath);
+        using var stream = File.OpenRead(assemblyPath);
+        using var pe = new PEReader(stream);
+        var metadata = pe.GetMetadataReader();
+
+        catalog.VisitedTypeNames.Should().Contain("<Module>");
+        catalog.Definitions.Should().HaveCount(
+            metadata.GetTableRowCount(TableIndex.MethodDef));
+        catalog.Bodies.Should().HaveCount(
+            catalog.Definitions.Count(definition =>
+                definition.RelativeVirtualAddress != 0));
+        catalog.Bodies.Should().Contain(body =>
+            body.TypeName.EndsWith(
+                "MsiNativeSurfaceTests+AdversarialConstructorRoute",
+                StringComparison.Ordinal)
+            && body.MethodName == ".ctor");
+        catalog.Bodies.Should().Contain(body =>
+            body.TypeName.EndsWith(
+                "MsiNativeSurfaceTests+AdversarialStaticConstructorRoute",
+                StringComparison.Ordinal)
+            && body.MethodName == ".cctor");
+    }
+
+    [Fact]
+    public void Dynamic_route_guard_rejects_constructor_fixtures_from_metadata()
+    {
+        var forbidden = FindForbiddenRoutes(
+            typeof(MsiNativeSurfaceTests).Assembly.Location);
+
+        forbidden.Should().Contain(route =>
+            route.TypeName.EndsWith(
+                "MsiNativeSurfaceTests+AdversarialConstructorRoute",
+                StringComparison.Ordinal)
+            && route.MethodName == ".ctor");
+        forbidden.Should().Contain(route =>
+            route.TypeName.EndsWith(
+                "MsiNativeSurfaceTests+AdversarialStaticConstructorRoute",
+                StringComparison.Ordinal)
+            && route.MethodName == ".cctor");
     }
 
     [Theory]
@@ -337,22 +381,29 @@ public sealed class MsiNativeSurfaceTests
     [Fact]
     public void Open_database_native_call_is_compiler_adjacent_to_null_persistence()
     {
-        var callToken = typeof(MsiDatabase).GetMethod(
-            "MsiOpenDatabaseW",
-            BindingFlags.Static | BindingFlags.NonPublic)!.MetadataToken;
-        var calls = typeof(MsiDatabase).Assembly.GetTypes()
-            .SelectMany(type => type.GetMethods(
-                BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic))
-            .Where(method => method.GetMethodBody() is not null)
-            .SelectMany(method => Decode(method.GetMethodBody()!.GetILAsByteArray()!)
-                .Select((instruction, index) => (method, instruction, index)))
+        using var stream = File.OpenRead(typeof(MsiDatabase).Assembly.Location);
+        using var pe = new PEReader(stream);
+        var metadata = pe.GetMetadataReader();
+        var catalog = ReadMethodCatalog(pe, metadata);
+        var callToken = metadata.MethodDefinitions
+            .Where(handle =>
+            {
+                var method = metadata.GetMethodDefinition(handle);
+                return metadata.GetString(method.Name) == "MsiOpenDatabaseW"
+                    && (method.Attributes & MethodAttributes.PinvokeImpl) != 0;
+            })
+            .Select(handle => MetadataTokens.GetToken(handle))
+            .Single();
+        var calls = catalog.Bodies
+            .SelectMany(body => Decode(body.Il)
+                .Select((instruction, index) => (body, instruction, index)))
             .Where(item => item.instruction.OpCode == OpCodes.Call
                 && item.instruction.Token == callToken)
             .ToArray();
 
         calls.Should().ContainSingle();
-        calls[0].method.Name.Should().Be("OpenDatabaseReadOnly");
-        var instructions = Decode(calls[0].method.GetMethodBody()!.GetILAsByteArray()!);
+        calls[0].body.MethodName.Should().Be("OpenDatabaseReadOnly");
+        var instructions = Decode(calls[0].body.Il);
         instructions.Skip(calls[0].index - 4).Take(4).Select(instruction => instruction.OpCode)
             .Should().Equal(
                 [OpCodes.Ldarg_1, OpCodes.Ldc_I4_0, OpCodes.Conv_I, OpCodes.Ldarg_2],
@@ -490,66 +541,203 @@ public sealed class MsiNativeSurfaceTests
                 attribute.SafeArrayUserDefinedSubType);
     }
 
-    private static IReadOnlyList<string> FindForbiddenRoutes(MethodInfo method)
+    private static PeMethodCatalog ReadMethodCatalog(string assemblyPath)
     {
-        var body = method.GetMethodBody();
-        if (body is null) return [];
+        using var stream = File.OpenRead(assemblyPath);
+        using var pe = new PEReader(stream);
+        var metadata = pe.GetMetadataReader();
+        return ReadMethodCatalog(pe, metadata);
+    }
 
-        var forbidden = new List<string>();
-        var typeArguments = method.DeclaringType?.GetGenericArguments();
-        var methodArguments = method.IsGenericMethod
-            ? method.GetGenericArguments()
-            : null;
-        foreach (var instruction in Decode(body.GetILAsByteArray()!))
+    private static PeMethodCatalog ReadMethodCatalog(
+        PEReader pe,
+        MetadataReader metadata)
+    {
+        var visitedTypeNames = new List<string>();
+        var definitions = new List<PeMethodDefinition>();
+        var bodies = new List<PeMethodBody>();
+        var methodDeclaringTypeNames =
+            new Dictionary<MethodDefinitionHandle, string>();
+        foreach (var typeHandle in metadata.TypeDefinitions)
         {
-            if (instruction.OpCode == OpCodes.Calli)
+            var typeName = QualifiedTypeName(metadata, typeHandle);
+            visitedTypeNames.Add(typeName);
+            var type = metadata.GetTypeDefinition(typeHandle);
+            foreach (var methodHandle in type.GetMethods())
             {
-                forbidden.Add($"{method.DeclaringType?.FullName}.{method.Name}:calli");
-                continue;
-            }
-            if (instruction.Token is not { } token) continue;
+                methodDeclaringTypeNames.Add(methodHandle, typeName);
+                var method = metadata.GetMethodDefinition(methodHandle);
+                definitions.Add(new PeMethodDefinition(
+                    typeName,
+                    metadata.GetString(method.Name),
+                    methodHandle,
+                    method.RelativeVirtualAddress));
+                if (method.RelativeVirtualAddress == 0)
+                {
+                    continue;
+                }
 
-            MemberInfo? member;
-            try
-            {
-                member = method.Module.ResolveMember(
-                    token,
-                    typeArguments,
-                    methodArguments);
+                var il = pe.GetMethodBody(method.RelativeVirtualAddress)
+                    .GetILBytes()
+                    ?? throw new InvalidDataException(
+                        $"Method {typeName}.{metadata.GetString(method.Name)} " +
+                        "has an RVA but no IL body.");
+                bodies.Add(new PeMethodBody(
+                    typeName,
+                    metadata.GetString(method.Name),
+                    methodHandle,
+                    il));
             }
-            catch (ArgumentException)
-            {
-                continue;
-            }
+        }
 
-            if (member is MethodInfo imported
-                && imported.GetCustomAttribute<DllImportAttribute>() is not null
-                && instruction.OpCode != OpCodes.Call)
-            {
-                forbidden.Add(
-                    $"{method.DeclaringType?.FullName}.{method.Name}:" +
-                    $"{instruction.OpCode.Name}:{QualifiedMemberName(imported)}");
-            }
+        return new PeMethodCatalog(
+            visitedTypeNames,
+            definitions,
+            bodies,
+            methodDeclaringTypeNames);
+    }
 
-            var qualified = member switch
+    private static List<ForbiddenRoute> FindForbiddenRoutes(
+        string assemblyPath)
+    {
+        using var stream = File.OpenRead(assemblyPath);
+        using var pe = new PEReader(stream);
+        var metadata = pe.GetMetadataReader();
+        var catalog = ReadMethodCatalog(pe, metadata);
+        return FindForbiddenRoutes(metadata, catalog);
+    }
+
+    private static List<ForbiddenRoute> FindForbiddenRoutes(
+        MetadataReader metadata,
+        PeMethodCatalog catalog)
+    {
+        var importedMethods = metadata.MethodDefinitions
+            .Where(handle =>
+                (metadata.GetMethodDefinition(handle).Attributes
+                    & MethodAttributes.PinvokeImpl) != 0)
+            .ToHashSet();
+        var forbidden = new List<ForbiddenRoute>();
+        foreach (var body in catalog.Bodies)
+        {
+            foreach (var instruction in Decode(body.Il))
             {
-                Type type => type.FullName ?? type.Name,
-                null => string.Empty,
-                _ => QualifiedMemberName(member),
-            };
-            if (IsForbiddenQualifiedRoute(qualified))
-            {
-                forbidden.Add(
-                    $"{method.DeclaringType?.FullName}.{method.Name}:" +
-                    $"{instruction.OpCode.Name}:{qualified}");
+                if (instruction.OpCode == OpCodes.Calli)
+                {
+                    forbidden.Add(new ForbiddenRoute(
+                        body.TypeName,
+                        body.MethodName,
+                        "calli"));
+                    continue;
+                }
+                if (instruction.Token is not { } token)
+                {
+                    continue;
+                }
+
+                var handle = MetadataTokens.Handle(token);
+                if (handle.Kind == HandleKind.MethodDefinition
+                    && importedMethods.Contains((MethodDefinitionHandle)handle)
+                    && instruction.OpCode != OpCodes.Call)
+                {
+                    forbidden.Add(new ForbiddenRoute(
+                        body.TypeName,
+                        body.MethodName,
+                        $"{instruction.OpCode.Name}:" +
+                        QualifiedEntityName(metadata, catalog, handle)));
+                }
+
+                var qualified = QualifiedEntityName(metadata, catalog, handle);
+                if (IsForbiddenQualifiedRoute(qualified))
+                {
+                    forbidden.Add(new ForbiddenRoute(
+                        body.TypeName,
+                        body.MethodName,
+                        $"{instruction.OpCode.Name}:{qualified}"));
+                }
             }
         }
 
         return forbidden;
     }
 
-    private static string QualifiedMemberName(MemberInfo member) =>
-        $"{member.DeclaringType?.FullName}.{member.Name}";
+    private static string QualifiedEntityName(
+        MetadataReader metadata,
+        PeMethodCatalog catalog,
+        Handle handle) =>
+        handle.Kind switch
+        {
+            HandleKind.TypeDefinition => QualifiedTypeName(
+                metadata,
+                (TypeDefinitionHandle)handle),
+            HandleKind.TypeReference => QualifiedTypeName(
+                metadata,
+                (TypeReferenceHandle)handle),
+            HandleKind.MethodDefinition => QualifiedMethodName(
+                metadata,
+                catalog,
+                (MethodDefinitionHandle)handle),
+            HandleKind.MemberReference => QualifiedMemberName(
+                metadata,
+                catalog,
+                (MemberReferenceHandle)handle),
+            HandleKind.MethodSpecification => QualifiedEntityName(
+                metadata,
+                catalog,
+                metadata.GetMethodSpecification(
+                    (MethodSpecificationHandle)handle).Method),
+            _ => string.Empty,
+        };
+
+    private static string QualifiedMethodName(
+        MetadataReader metadata,
+        PeMethodCatalog catalog,
+        MethodDefinitionHandle handle)
+    {
+        var methodName = metadata.GetString(
+            metadata.GetMethodDefinition(handle).Name);
+        return catalog.MethodDeclaringTypeNames.TryGetValue(
+            handle,
+            out var typeName)
+            ? $"{typeName}.{methodName}"
+            : methodName;
+    }
+
+    private static string QualifiedTypeName(
+        MetadataReader metadata,
+        TypeDefinitionHandle handle)
+    {
+        var type = metadata.GetTypeDefinition(handle);
+        var typeName = metadata.GetString(type.Name);
+        var declaringType = type.GetDeclaringType();
+        if (!declaringType.IsNil)
+        {
+            return $"{QualifiedTypeName(metadata, declaringType)}+{typeName}";
+        }
+
+        var typeNamespace = metadata.GetString(type.Namespace);
+        return string.IsNullOrEmpty(typeNamespace)
+            ? typeName
+            : $"{typeNamespace}.{typeName}";
+    }
+
+    private static string QualifiedTypeName(
+        MetadataReader metadata,
+        TypeReferenceHandle handle)
+    {
+        var type = metadata.GetTypeReference(handle);
+        var typeName = metadata.GetString(type.Name);
+        if (type.ResolutionScope.Kind == HandleKind.TypeReference)
+        {
+            return $"{QualifiedTypeName(
+                metadata,
+                (TypeReferenceHandle)type.ResolutionScope)}+{typeName}";
+        }
+
+        var typeNamespace = metadata.GetString(type.Namespace);
+        return string.IsNullOrEmpty(typeNamespace)
+            ? typeName
+            : $"{typeNamespace}.{typeName}";
+    }
 
     private static bool HasLengthGateBeforeSanitizer(MethodInfo method)
     {
@@ -625,15 +813,17 @@ public sealed class MsiNativeSurfaceTests
                 or "System.Delegate.CreateDelegate";
     }
 
-    private static string QualifiedMemberName(MetadataReader metadata, MemberReferenceHandle handle)
+    private static string QualifiedMemberName(
+        MetadataReader metadata,
+        PeMethodCatalog catalog,
+        MemberReferenceHandle handle)
     {
         var member = metadata.GetMemberReference(handle);
-        if (member.Parent.Kind != HandleKind.TypeReference)
-        {
-            return metadata.GetString(member.Name);
-        }
-        var parent = metadata.GetTypeReference((TypeReferenceHandle)member.Parent);
-        return $"{metadata.GetString(parent.Namespace)}.{metadata.GetString(parent.Name)}.{metadata.GetString(member.Name)}";
+        var parentName = QualifiedEntityName(metadata, catalog, member.Parent);
+        var memberName = metadata.GetString(member.Name);
+        return string.IsNullOrEmpty(parentName)
+            ? memberName
+            : $"{parentName}.{memberName}";
     }
 
     private static bool ContainsFunctionPointer(Type type) =>
@@ -706,6 +896,30 @@ public sealed class MsiNativeSurfaceTests
 
     private sealed record IlInstruction(int Offset, OpCode OpCode, int? Token);
 
+    private sealed record PeMethodCatalog(
+        IReadOnlyList<string> VisitedTypeNames,
+        IReadOnlyList<PeMethodDefinition> Definitions,
+        IReadOnlyList<PeMethodBody> Bodies,
+        IReadOnlyDictionary<MethodDefinitionHandle, string>
+            MethodDeclaringTypeNames);
+
+    private sealed record PeMethodDefinition(
+        string TypeName,
+        string MethodName,
+        MethodDefinitionHandle Handle,
+        int RelativeVirtualAddress);
+
+    private sealed record PeMethodBody(
+        string TypeName,
+        string MethodName,
+        MethodDefinitionHandle Handle,
+        byte[] Il);
+
+    private sealed record ForbiddenRoute(
+        string TypeName,
+        string MethodName,
+        string Route);
+
     private sealed record NativeMethodContract(
         Type ReturnType,
         NativeMarshalContract? ReturnMarshal,
@@ -756,6 +970,25 @@ public sealed class MsiNativeSurfaceTests
     {
         internal static nint GetProcAddress(nint module, string symbol) => module;
         internal static nint LoadLibraryW(string path) => nint.Zero;
+    }
+
+    private sealed class AdversarialConstructorRoute
+    {
+        internal AdversarialConstructorRoute()
+        {
+            _ = AdversarialNamedResolver.GetProcAddress(
+                nint.Zero,
+                "benign-test-symbol");
+        }
+    }
+
+    private static class AdversarialStaticConstructorRoute
+    {
+        static AdversarialStaticConstructorRoute()
+        {
+            _ = AdversarialNamedResolver.LoadLibraryW(
+                "benign-test-library");
+        }
     }
 
     private static class AdversarialSignatures
