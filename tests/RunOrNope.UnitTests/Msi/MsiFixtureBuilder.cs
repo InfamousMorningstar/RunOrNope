@@ -74,10 +74,18 @@ internal sealed class MsiFixtureBuilder : IDisposable
     public MsiFixtureBuilder AddStream(string table, string key, byte[] content)
     {
         ArgumentNullException.ThrowIfNull(content);
-        if (!string.Equals(table, "FixtureStreams", StringComparison.Ordinal))
+        var insertSql = table switch
         {
-            throw new ArgumentException("Only the benign FixtureStreams table is supported.", nameof(table));
-        }
+            "FixtureStreams" =>
+                "INSERT INTO `FixtureStreams` (`Key`, `Payload`) VALUES (?, ?)",
+            "Binary" => "INSERT INTO `Binary` (`Name`, `Data`) VALUES (?, ?)",
+            "Icon" => "INSERT INTO `Icon` (`Name`, `Data`) VALUES (?, ?)",
+            "_Streams" => "INSERT INTO `_Streams` (`Name`, `Data`) VALUES (?, ?)",
+            "_Storages" => "INSERT INTO `_Storages` (`Name`, `Data`) VALUES (?, ?)",
+            _ => throw new ArgumentException(
+                "Only fixed benign fixture stream tables are supported.",
+                nameof(table)),
+        };
 
         var streamPath = System.IO.Path.Combine(
             System.IO.Path.GetTempPath(),
@@ -91,7 +99,7 @@ internal sealed class MsiFixtureBuilder : IDisposable
         {
             Check(MsiRecordSetStringW(record, 1, key), nameof(MsiRecordSetStringW));
             Check(MsiRecordSetStreamW(record, 2, streamPath), nameof(MsiRecordSetStreamW));
-            Execute("INSERT INTO `FixtureStreams` (`Key`, `Payload`) VALUES (?, ?)", record);
+            Execute(insertSql, record);
         }
         finally
         {
